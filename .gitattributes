@@ -6,4 +6,4 @@
 
 # Vendored crates are checksum-verified by Cargo. Keep this rule last so it
 # overrides the generic source patterns and preserves every byte exactly.
-vendor/** -text
+vendor/** -text -eol
