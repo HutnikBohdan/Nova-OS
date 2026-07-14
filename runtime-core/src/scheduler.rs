@@ -6,6 +6,18 @@ pub enum SchedulerError {
     AlreadyQueued,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchError {
+    Queue(SchedulerError),
+    NoRunnableThread,
+}
+
+impl From<SchedulerError> for DispatchError {
+    fn from(value: SchedulerError) -> Self {
+        Self::Queue(value)
+    }
+}
+
 /// Allocation-free FIFO run queue. A thread is appended after its time slice,
 /// producing deterministic round-robin scheduling.
 pub struct RoundRobin<const N: usize> {
@@ -83,6 +95,80 @@ impl<const N: usize> RoundRobin<N> {
 }
 
 impl<const N: usize> Default for RoundRobin<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Architecture-neutral runnable-thread state used by the kernel dispatcher.
+/// Context storage remains architecture-specific; this type owns only ordering
+/// and the identity of the currently running thread.
+pub struct SchedulerCore<const N: usize> {
+    ready: RoundRobin<N>,
+    current: Option<ThreadId>,
+}
+
+impl<const N: usize> SchedulerCore<N> {
+    pub const fn new() -> Self {
+        Self {
+            ready: RoundRobin::new(),
+            current: None,
+        }
+    }
+
+    pub const fn current(&self) -> Option<ThreadId> {
+        self.current
+    }
+
+    pub const fn ready_len(&self) -> usize {
+        self.ready.len()
+    }
+
+    pub fn install(&mut self, thread: ThreadId) -> Result<(), DispatchError> {
+        if self.current == Some(thread) {
+            return Err(DispatchError::Queue(SchedulerError::AlreadyQueued));
+        }
+        self.ready.enqueue(thread)?;
+        Ok(())
+    }
+
+    pub fn start(&mut self) -> Result<ThreadId, DispatchError> {
+        if let Some(current) = self.current {
+            return Ok(current);
+        }
+        let next = self.ready.next().ok_or(DispatchError::NoRunnableThread)?;
+        self.current = Some(next);
+        Ok(next)
+    }
+
+    pub fn on_tick(&mut self) -> Result<ThreadId, DispatchError> {
+        let current = self.current.take().ok_or(DispatchError::NoRunnableThread)?;
+        self.ready.enqueue(current)?;
+        let next = self.ready.next().ok_or(DispatchError::NoRunnableThread)?;
+        self.current = Some(next);
+        Ok(next)
+    }
+
+    /// Removes the running thread and dispatches its successor. The exited
+    /// thread is deliberately never reinserted into the ready queue.
+    pub fn exit_current(&mut self) -> Result<(ThreadId, Option<ThreadId>), DispatchError> {
+        let exited = self.current.take().ok_or(DispatchError::NoRunnableThread)?;
+        let next = self.ready.next();
+        self.current = next;
+        Ok((exited, next))
+    }
+
+    pub fn remove(&mut self, thread: ThreadId) -> bool {
+        if self.current == Some(thread) {
+            self.current = None;
+            true
+        } else {
+            self.ready.remove(thread)
+        }
+    }
+}
+
+impl<const N: usize> Default for SchedulerCore<N> {
     fn default() -> Self {
         Self::new()
     }
@@ -246,5 +332,34 @@ mod tests {
         assert!(!quantum.tick());
         assert!(quantum.tick());
         assert!(!quantum.tick());
+    }
+
+    #[test]
+    fn scheduler_core_rotates_three_threads() {
+        let mut scheduler = SchedulerCore::<3>::new();
+        for id in 1..=3 {
+            scheduler.install(ThreadId(id)).unwrap();
+        }
+        assert_eq!(scheduler.start().unwrap(), ThreadId(1));
+        assert_eq!(scheduler.on_tick().unwrap(), ThreadId(2));
+        assert_eq!(scheduler.on_tick().unwrap(), ThreadId(3));
+        assert_eq!(scheduler.on_tick().unwrap(), ThreadId(1));
+    }
+
+    #[test]
+    fn scheduler_core_hands_off_after_exit() {
+        let mut scheduler = SchedulerCore::<3>::new();
+        for id in 1..=3 {
+            scheduler.install(ThreadId(id)).unwrap();
+        }
+        assert_eq!(scheduler.start().unwrap(), ThreadId(1));
+        assert_eq!(scheduler.on_tick().unwrap(), ThreadId(2));
+        assert_eq!(
+            scheduler.exit_current().unwrap(),
+            (ThreadId(2), Some(ThreadId(3)))
+        );
+        assert_eq!(scheduler.on_tick().unwrap(), ThreadId(1));
+        assert_eq!(scheduler.on_tick().unwrap(), ThreadId(3));
+        assert_ne!(scheduler.current(), Some(ThreadId(2)));
     }
 }

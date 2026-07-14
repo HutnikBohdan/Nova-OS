@@ -14,6 +14,7 @@ mod network;
 mod operator;
 mod pci;
 mod process;
+mod scheduler;
 mod serial;
 mod services;
 mod user_space;

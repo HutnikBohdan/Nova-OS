@@ -51,24 +51,15 @@ nova_kernel_return_rsp: .quad 0
 nova_kernel_return_rip: .quad 0
 .global nova_user_yields
 nova_user_yields: .quad 0
-.global nova_preempt_active
-nova_preempt_active: .byte 0
+.global nova_scheduler_active
+nova_scheduler_active: .byte 0
+.global nova_scheduler_irq_switch
+nova_scheduler_irq_switch: .byte 0
 .align 8
-.global nova_preempt_current
-nova_preempt_current: .quad 0
-.global nova_preempt_switches
-nova_preempt_switches: .quad 0
-.global nova_preempt_cr3_a
-nova_preempt_cr3_a: .quad 0
-.global nova_preempt_cr3_b
-nova_preempt_cr3_b: .quad 0
+.global nova_scheduler_current_context
+nova_scheduler_current_context: .quad 0
 .global nova_preempt_kernel_cr3
 nova_preempt_kernel_cr3: .quad 0
-.align 16
-.global nova_context_a
-nova_context_a: .zero 168
-.global nova_context_b
-nova_context_b: .zero 168
 .section .text
 .global nova_enter_ring3
 nova_enter_ring3:
@@ -114,6 +105,8 @@ nova_enter_preempt_ring3:
 
 .global nova_int80_stub
 nova_int80_stub:
+    cmp rax, 1
+    je .Lring3_process_exit
     cmp rax, 2
     je .Lring3_yield
     cmp rax, 4
@@ -122,6 +115,7 @@ nova_int80_stub:
     je .Lring3_channel_send
     cmp rax, 9
     je .Lring3_channel_receive
+.Lring3_legacy_exit:
     mov r8, rsi
     mov rsi, rax
     mov rdx, rdi
@@ -137,6 +131,20 @@ nova_int80_stub:
     cli
 1:  hlt
     jmp 1b
+.Lring3_process_exit:
+    cmp byte ptr [rip + nova_scheduler_active], 0
+    je .Lring3_legacy_exit
+    mov r8, rsi
+    mov rsi, rax
+    mov rdx, rdi
+    mov rdi, [rsp + 8]
+    mov rcx, r8
+    push rax
+    mov byte ptr [rip + nova_scheduler_irq_switch], 0
+    call nova_scheduler_exit_from_ring3
+    test rax, rax
+    jz .Lscheduler_syscall_complete
+    jmp .Lload_context
 .Lring3_yield:
     inc qword ptr [rip + nova_user_yields]
     iretq
@@ -215,15 +223,13 @@ nova_timer_ticks: .quad 0
 nova_timer_stub:
     push rax
     inc qword ptr [rip + nova_timer_ticks]
-    cmp byte ptr [rip + nova_preempt_active], 0
+    cmp byte ptr [rip + nova_scheduler_active], 0
     je .Ltimer_eoi
-    mov rax, [rip + nova_preempt_current]
+.Lscheduler_timer:
+    mov byte ptr [rip + nova_scheduler_irq_switch], 1
+    mov rax, [rip + nova_scheduler_current_context]
     test rax, rax
-    jnz .Lsave_context_b
-    lea rax, [rip + nova_context_a]
-    jmp .Lsave_context
-.Lsave_context_b:
-    lea rax, [rip + nova_context_b]
+    jz .Lscheduler_complete
 .Lsave_context:
     mov [rax + 0], r15
     mov [rax + 8], r14
@@ -253,18 +259,9 @@ nova_timer_stub:
     mov [rax + 152], rdx
     mov rdx, cr3
     mov [rax + 160], rdx
-    inc qword ptr [rip + nova_preempt_switches]
-    cmp qword ptr [rip + nova_preempt_switches], 8
-    jae .Lpreempt_complete
-    mov rax, [rip + nova_preempt_current]
-    xor rax, 1
-    mov [rip + nova_preempt_current], rax
+    call nova_scheduler_on_timer
     test rax, rax
-    jnz .Lload_context_b
-    lea rax, [rip + nova_context_a]
-    jmp .Lload_context
-.Lload_context_b:
-    lea rax, [rip + nova_context_b]
+    jz .Lscheduler_complete
 .Lload_context:
     mov rdx, [rax + 120]
     mov [rsp + 8], rdx
@@ -294,13 +291,22 @@ nova_timer_stub:
     mov rdx, [rax + 112]
     mov [rsp], rdx
     mov rdx, [rax + 88]
-    jmp .Ltimer_eoi
-.Lpreempt_complete:
-    mov byte ptr [rip + nova_preempt_active], 0
+    cmp byte ptr [rip + nova_scheduler_irq_switch], 0
+    jne .Ltimer_eoi
+    pop rax
+    iretq
+.Lscheduler_complete:
+    mov byte ptr [rip + nova_scheduler_active], 0
     mov rax, [rip + nova_preempt_kernel_cr3]
     mov cr3, rax
     mov al, 0x20
     out 0x20, al
+    mov rsp, [rip + nova_kernel_return_rsp]
+    jmp [rip + nova_kernel_return_rip]
+.Lscheduler_syscall_complete:
+    mov byte ptr [rip + nova_scheduler_active], 0
+    mov rax, [rip + nova_preempt_kernel_cr3]
+    mov cr3, rax
     mov rsp, [rip + nova_kernel_return_rsp]
     jmp [rip + nova_kernel_return_rip]
 .Ltimer_eoi:
@@ -333,14 +339,7 @@ unsafe extern "C" {
     fn nova_invalid_opcode_stub();
     static nova_timer_ticks: u64;
     static nova_user_yields: u64;
-    static mut nova_preempt_active: u8;
-    static mut nova_preempt_current: u64;
-    static mut nova_preempt_switches: u64;
-    static mut nova_preempt_cr3_a: u64;
-    static mut nova_preempt_cr3_b: u64;
     static mut nova_preempt_kernel_cr3: u64;
-    static mut nova_context_a: runtime_core::CpuContext;
-    static mut nova_context_b: runtime_core::CpuContext;
 }
 
 pub fn run_ring3_proof(boot_info: &BootInfo) -> Option<UserModeSelectors> {
@@ -573,10 +572,19 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
     let Ok(_second) = process::prepare_preempt_process(&mut second_space, selectors) else {
         return;
     };
+    let Ok(mut third_space) = (unsafe { CurrentUserSpace::new(boot_info) }) else {
+        return;
+    };
+    let Ok(third) = process::prepare_preempt_process(&mut third_space, selectors) else {
+        return;
+    };
     let Some(first_counter) = first_space.physical_address(process::USER_EXCHANGE_BASE) else {
         return;
     };
     let Some(second_counter) = second_space.physical_address(process::USER_EXCHANGE_BASE) else {
+        return;
+    };
+    let Some(third_counter) = third_space.physical_address(process::USER_EXCHANGE_BASE) else {
         return;
     };
     let Some(offset) = boot_info.physical_memory_offset.into_option() else {
@@ -601,24 +609,44 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
         cr3: second_space.level4_address() | flags.bits(),
         ..runtime_core::CpuContext::default()
     };
+    let third_context = runtime_core::CpuContext {
+        instruction_pointer: third.instruction_pointer(),
+        code_segment: selectors.code() as u64,
+        flags: 0x202,
+        stack_pointer: third.stack_pointer(),
+        stack_segment: selectors.data() as u64,
+        cr3: third_space.level4_address() | flags.bits(),
+        ..runtime_core::CpuContext::default()
+    };
+
+    crate::scheduler::reset(true);
+    if !crate::scheduler::install(
+        runtime_core::ProcessId(1),
+        runtime_core::ThreadId(1),
+        first_context,
+    ) || !crate::scheduler::install(
+        runtime_core::ProcessId(2),
+        runtime_core::ThreadId(2),
+        second_context,
+    ) || !crate::scheduler::install(
+        runtime_core::ProcessId(3),
+        runtime_core::ThreadId(3),
+        third_context,
+    ) {
+        crate::serial::write_str("NOVA_PREEMPTIVE_CR3_SWITCH_FAILED\n");
+        return;
+    }
+
     unsafe {
-        ptr::write_volatile(ptr::addr_of_mut!(nova_preempt_current), 0);
-        ptr::write_volatile(ptr::addr_of_mut!(nova_preempt_switches), 0);
-        ptr::write_volatile(
-            ptr::addr_of_mut!(nova_preempt_cr3_a),
-            first_space.level4_address() | flags.bits(),
-        );
-        ptr::write_volatile(
-            ptr::addr_of_mut!(nova_preempt_cr3_b),
-            second_space.level4_address() | flags.bits(),
-        );
         ptr::write_volatile(
             ptr::addr_of_mut!(nova_preempt_kernel_cr3),
             kernel_cr3.start_address().as_u64() | flags.bits(),
         );
-        ptr::write_volatile(ptr::addr_of_mut!(nova_context_a), first_context);
-        ptr::write_volatile(ptr::addr_of_mut!(nova_context_b), second_context);
-        ptr::write_volatile(ptr::addr_of_mut!(nova_preempt_active), 1);
+        let first_scheduled = crate::scheduler::start();
+        if first_scheduled.is_null() {
+            crate::serial::write_str("NOVA_PREEMPTIVE_CR3_SWITCH_FAILED\n");
+            return;
+        }
         x86_64::registers::control::Cr3::write(
             x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
                 first_space.level4_address(),
@@ -634,16 +662,12 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
     }
     let first_value = unsafe { ptr::read_volatile((offset + first_counter) as *const u64) };
     let second_value = unsafe { ptr::read_volatile((offset + second_counter) as *const u64) };
-    let switches = unsafe { ptr::read_volatile(ptr::addr_of!(nova_preempt_switches)) };
-    let saved_first = unsafe { ptr::read_volatile(ptr::addr_of!(nova_context_a)) };
-    let saved_second = unsafe { ptr::read_volatile(ptr::addr_of!(nova_context_b)) };
-    if first_value > 0
-        && second_value > 0
-        && switches >= 8
-        && saved_first.cr3 != saved_second.cr3
-        && saved_first.instruction_pointer >= process::USER_CODE_BASE
-        && saved_second.instruction_pointer >= process::USER_CODE_BASE
-    {
+    let third_value = unsafe { ptr::read_volatile((offset + third_counter) as *const u64) };
+    let scheduler_passed = crate::scheduler::proof_passed();
+    crate::scheduler::stop();
+    if first_value > 0 && second_value > 0 && third_value > 0 && scheduler_passed {
+        crate::serial::write_str("NOVA_SCHEDULER_3_PROCESS_OK\n");
+        crate::serial::write_str("NOVA_SCHEDULER_EXIT_HANDOFF_OK\n");
         crate::serial::write_str("NOVA_FULL_CONTEXT_SWITCH_OK\n");
         crate::serial::write_str("NOVA_PREEMPTIVE_CR3_SWITCH_OK\n");
     } else {
@@ -810,4 +834,22 @@ extern "C" fn nova_ring3_exit(saved_cs: u64, syscall: u64, marker: u64, exit_cod
             0
         }
     }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn nova_scheduler_exit_from_ring3(
+    saved_cs: u64,
+    syscall: u64,
+    marker: u64,
+    _exit_code: i32,
+) -> *mut runtime_core::CpuContext {
+    if saved_cs & 3 != 3
+        || syscall != runtime_core::syscall::SyscallNumber::ProcessExit as u64
+        || marker != process::RING3_PROOF_MARKER
+    {
+        crate::serial::write_str("NOVA_RING3_PROCESS_REJECTED\n");
+        crate::scheduler::stop();
+        return core::ptr::null_mut();
+    }
+    crate::scheduler::exit_current()
 }

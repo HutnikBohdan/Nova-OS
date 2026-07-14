@@ -286,6 +286,18 @@ impl<const N: usize> ThreadTable<N> {
         thread.state = next;
         Ok(())
     }
+
+    pub fn remove(&mut self, id: ThreadId) -> Result<Thread, ProcessError> {
+        let slot = self
+            .slots
+            .iter_mut()
+            .find(|slot| slot.as_ref().is_some_and(|thread| thread.id == id))
+            .ok_or(ProcessError::NotFound)?;
+        if !matches!(slot.as_ref().unwrap().state, ThreadState::Exited(_)) {
+            return Err(ProcessError::InvalidTransition);
+        }
+        Ok(slot.take().unwrap())
+    }
 }
 
 impl<const N: usize> Default for ThreadTable<N> {
@@ -344,5 +356,23 @@ mod tests {
             processes.reap(child).unwrap().state,
             ProcessState::Crashed(CrashReason::PageFault)
         ));
+    }
+
+    #[test]
+    fn exited_thread_can_be_removed_but_ready_thread_cannot() {
+        let mut processes = ProcessTable::<1>::new();
+        let process = processes.create(None, 1).unwrap();
+        processes.start(process).unwrap();
+        let mut threads = ThreadTable::<1>::new();
+        let thread = threads
+            .create(processes.get(process).unwrap(), 10, 20)
+            .unwrap();
+        threads.transition(thread, ThreadState::Ready).unwrap();
+        assert_eq!(threads.remove(thread), Err(ProcessError::InvalidTransition));
+        threads
+            .transition(thread, ThreadState::Exited(ExitCode(0)))
+            .unwrap();
+        assert_eq!(threads.remove(thread).unwrap().id, thread);
+        assert!(threads.get(thread).is_none());
     }
 }

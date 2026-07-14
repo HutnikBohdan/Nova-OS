@@ -24,4 +24,7 @@ pub use process::{
     CpuContext, CrashReason, ExitCode, Process, ProcessError, ProcessId, ProcessState,
     ProcessTable, Thread, ThreadId, ThreadState, ThreadTable,
 };
-pub use scheduler::{BlockError, BlockedSet, Quantum, RoundRobin, SchedulerError, WaitReason};
+pub use scheduler::{
+    BlockError, BlockedSet, DispatchError, Quantum, RoundRobin, SchedulerCore, SchedulerError,
+    WaitReason,
+};
