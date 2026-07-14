@@ -1,4 +1,8 @@
 target/
+!vendor/cc-1.2.0/src/target/
+!vendor/cc-1.2.0/src/target/**
+!vendor/cc-1.2.67/src/target/
+!vendor/cc-1.2.67/src/target/**
 /dist/
 /tools/*
 !/tools/virtio-trace-events
@@ -12,3 +16,4 @@ target/
 *.ppm
 **/Cargo.lock
 !/Cargo.lock
+!vendor/**/Cargo.lock
