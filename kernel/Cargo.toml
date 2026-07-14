@@ -1,0 +1,49 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+agent-core = { path = "../agent-core" }
+ai-core = { path = "../ai-core" }
+apps-core = { path = "../apps-core" }
+browser-core = { path = "../browser-core" }
+build-core = { path = "../build-core" }
+compositor-core = { path = "../compositor-core" }
+compiler-core = { path = "../compiler-core" }
+deployment-core = { path = "../deployment-core" }
+driver-core = { path = "../driver-core" }
+hardware-core = { path = "../hardware-core" }
+desktop-core = { path = "../desktop-core" }
+installer-core = { path = "../installer-core" }
+loader-core = { path = "../loader-core" }
+locale-core = { path = "../locale-core" }
+media-core = { path = "../media-core" }
+memory-core = { path = "../memory-core" }
+net-core = { path = "../net-core" }
+novafs-core = { path = "../novafs-core" }
+pki-core = { path = "../pki-core" }
+platform-core = { path = "../platform-core" }
+productivity-core = { path = "../productivity-core" }
+runtime-core = { path = "../runtime-core" }
+security-core = { path = "../security-core" }
+socket-core = { path = "../socket-core" }
+storage-core = { path = "../storage-core" }
+tls-core = { path = "../tls-core" }
+usb-core = { path = "../usb-core" }
+vfs-core = { path = "../vfs-core" }
+virtio-core = { path = "../virtio-core" }
+bootloader_api = "0.11.15"
+x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
+
+[build-dependencies]
+fontdue = "0.9.3"
+
+[features]
+guardian-fault-injection = []
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+bench = false

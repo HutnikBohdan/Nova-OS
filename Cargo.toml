@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["agent-core", "ai-core", "apps-core", "browser-core", "build-core", "compiler-core", "compositor-core", "crypto-core", "deployment-core", "desktop-core", "driver-core", "hardware-core", "image-builder", "installer-core", "kernel", "loader-core", "locale-core", "media-core", "memory-core", "net-core", "novafs-core", "pki-core", "platform-core", "productivity-core", "runtime-core", "security-core", "socket-core", "storage-core", "tls-core", "usb-core", "vfs-core", "virtio-core", "vm-lab"]
+
+[package]
+name = "nova-os"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ovmf-prebuilt = "0.2.4"
+
+[build-dependencies]
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
+bootloader = "0.11.15"

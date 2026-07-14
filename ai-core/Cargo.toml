@@ -1,0 +1,14 @@
+[package]
+name = "ai-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Allocator-free local inference and verified agent primitives for Nova OS"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+
+[dependencies]

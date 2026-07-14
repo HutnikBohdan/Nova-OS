@@ -1,0 +1,5 @@
+virtio_set_status
+virtio_pci_notify_write_pio
+virtio_queue_notify
+virtqueue_pop
+virtio_blk_handle_write

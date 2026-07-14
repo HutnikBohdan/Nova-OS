@@ -1,0 +1,12 @@
+[package]
+name = "locale-core"
+version = "0.1.0"
+edition = "2024"
+license = "Proprietary"
+
+[lib]
+path = "src/lib.rs"
+
+
+[lints.rust]
+unsafe_code = "forbid"

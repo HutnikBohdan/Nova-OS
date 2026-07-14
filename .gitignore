@@ -1,0 +1,8 @@
+target/
+/dist/
+/tools/*
+!/tools/virtio-trace-events
+/vm-data/
+*.ppm
+**/Cargo.lock
+!/Cargo.lock

@@ -1,0 +1,10 @@
+[package]
+name = "hardware-core"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Nova OS no_std hardware protocols and safe firmware parsers"
+
+[lib]
+path = "src/lib.rs"
+
