@@ -1,9 +1,9 @@
-# Vendored crates are checksum-verified by Cargo. Preserve their bytes exactly
-# on every platform instead of applying Git line-ending conversion.
-vendor/** -text
-
 # Keep project-owned source and documentation consistently UTF-8/LF.
 *.rs text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
 *.ps1 text eol=crlf
+
+# Vendored crates are checksum-verified by Cargo. Keep this rule last so it
+# overrides the generic source patterns and preserves every byte exactly.
+vendor/** -text
