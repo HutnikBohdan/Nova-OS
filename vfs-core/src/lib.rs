@@ -235,6 +235,10 @@ pub mod capability {
     pub const CHOWN: u64 = 1 << 1;
     pub const MOUNT: u64 = 1 << 2;
     pub const QUOTA_ADMIN: u64 = 1 << 3;
+    /// Allows changes to mandatory inode security policy such as required
+    /// capabilities. This is deliberately separate from discretionary owner
+    /// controls and from CHOWN.
+    pub const SECURITY_ADMIN: u64 = 1 << 4;
     pub const SYSTEM: u64 = 1 << 63;
 }
 
@@ -672,8 +676,38 @@ impl<B: Backend> Vfs<B> {
             return Err(VfsError::ReadOnly);
         }
         let current = self.mounts[mount].backend.metadata(inode)?;
-        if current.owner != credentials.user && !credentials.has_capabilities(capability::CHOWN) {
+        if updated.mode & !0o777 != 0 {
+            return Err(VfsError::InvalidArgument);
+        }
+
+        let ownership_changed = updated.owner != current.owner || updated.group != current.group;
+        let discretionary_policy_changed =
+            updated.mode != current.mode || updated.acl != current.acl;
+        let mandatory_policy_changed =
+            updated.required_capabilities != current.required_capabilities;
+        let security_admin = credentials.has_capabilities(capability::SECURITY_ADMIN);
+
+        if ownership_changed && !credentials.has_capabilities(capability::CHOWN) {
             return Err(VfsError::PermissionDenied);
+        }
+        if mandatory_policy_changed && !security_admin {
+            return Err(VfsError::PermissionDenied);
+        }
+        if discretionary_policy_changed && current.owner != credentials.user && !security_admin {
+            return Err(VfsError::PermissionDenied);
+        }
+
+        // A delegated CHOWN must not be combined with a mode/ACL rewrite that
+        // leaves the previous owner access after transferring the inode. A
+        // security administrator may perform that atomic policy migration.
+        if ownership_changed && !security_admin && discretionary_policy_changed {
+            return Err(VfsError::PermissionDenied);
+        }
+        if ownership_changed && !security_admin {
+            // Drop any pre-existing named grants on a plain ownership transfer.
+            // Otherwise the old owner could install an ACL first and retain
+            // access through an apparently clean CHOWN operation.
+            updated.acl.clear();
         }
         updated.inode = inode;
         updated.kind = current.kind;
@@ -1484,6 +1518,104 @@ mod security_tests {
     }
 
     #[test]
+    fn owner_cannot_escalate_inode_identity_or_mandatory_policy() {
+        let mut fs = vfs();
+        let path = "/Домівка/security-policy";
+        let handle = fs
+            .open(
+                path,
+                OpenOptions::new().read(true).write(true).create(true),
+                &user(),
+            )
+            .unwrap();
+        fs.close(handle).unwrap();
+        let original = fs.metadata(path, &user()).unwrap();
+
+        let mut changed = original.clone();
+        changed.owner = 0;
+        assert_eq!(
+            fs.set_metadata(path, changed, &user()),
+            Err(VfsError::PermissionDenied)
+        );
+
+        let mut changed = original.clone();
+        changed.group = 0;
+        assert_eq!(
+            fs.set_metadata(path, changed, &user()),
+            Err(VfsError::PermissionDenied)
+        );
+
+        let mut changed = original.clone();
+        changed.required_capabilities = capability::SYSTEM;
+        assert_eq!(
+            fs.set_metadata(path, changed.clone(), &user()),
+            Err(VfsError::PermissionDenied)
+        );
+
+        let mut security_admin = user();
+        security_admin.capabilities = capability::SECURITY_ADMIN;
+        fs.set_metadata(path, changed, &security_admin).unwrap();
+        assert_eq!(
+            fs.metadata(path, &admin()).unwrap().required_capabilities,
+            capability::SYSTEM
+        );
+    }
+
+    #[test]
+    fn delegated_chown_cannot_preserve_old_owner_access() {
+        let mut fs = vfs();
+        let path = "/Домівка/chown-boundary";
+        let old_owner_handle = fs
+            .open(
+                path,
+                OpenOptions::new().read(true).write(true).create(true),
+                &user(),
+            )
+            .unwrap();
+        fs.write(old_owner_handle, b"private").unwrap();
+
+        let mut metadata = fs.metadata(path, &user()).unwrap();
+        metadata.acl.push(AclEntry {
+            subject: AclSubject::User(user().user),
+            allow: Access::ALL,
+            deny: Access::NONE,
+        });
+        fs.set_metadata(path, metadata, &user()).unwrap();
+
+        let mut delegated_chown = user();
+        delegated_chown.capabilities = capability::CHOWN;
+        let current = fs.metadata(path, &user()).unwrap();
+        let mut combined_rewrite = current.clone();
+        combined_rewrite.owner = 0;
+        combined_rewrite.group = 0;
+        combined_rewrite.mode = 0o777;
+        assert_eq!(
+            fs.set_metadata(path, combined_rewrite, &delegated_chown),
+            Err(VfsError::PermissionDenied)
+        );
+
+        let mut clean_transfer = current;
+        clean_transfer.owner = 0;
+        clean_transfer.group = 0;
+        fs.set_metadata(path, clean_transfer, &delegated_chown)
+            .unwrap();
+
+        let transferred = fs.metadata(path, &admin()).unwrap();
+        assert_eq!((transferred.owner, transferred.group), (0, 0));
+        assert_eq!(transferred.mode, 0o660);
+        assert!(transferred.acl.is_empty());
+        let mut output = [0; 8];
+        assert_eq!(
+            fs.read(old_owner_handle, &mut output),
+            Err(VfsError::PermissionDenied)
+        );
+        assert_eq!(
+            fs.write(old_owner_handle, b"retained access"),
+            Err(VfsError::PermissionDenied)
+        );
+    }
+
+    #[test]
     fn symlink_payload_is_charged_to_quota_and_rolled_back() {
         let mut fs = vfs();
         fs.set_quota(1000, Quota::new(4, 1), &admin()).unwrap();
@@ -1598,7 +1730,10 @@ mod tests {
             deny: Access::READ,
         });
         meta.required_capabilities = capability::SYSTEM;
-        fs.set_metadata("/Домівка/секрет", meta, &user()).unwrap();
+        let mut security_admin = user();
+        security_admin.capabilities = capability::SECURITY_ADMIN;
+        fs.set_metadata("/Домівка/секрет", meta, &security_admin)
+            .unwrap();
         assert_eq!(
             fs.open("/Домівка/секрет", OpenOptions::new().read(true), &guest),
             Err(VfsError::PermissionDenied)

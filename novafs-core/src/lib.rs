@@ -129,6 +129,7 @@ impl Superblock {
                 self.state = CleanState::Recovering;
                 RecoveryAction::ReplayJournal
             }
+            (CleanState::Recovering, MountEvent::Mount) => RecoveryAction::ReplayJournal,
             (CleanState::Recovering, MountEvent::ReplayOk) => {
                 self.state = CleanState::Mounted;
                 RecoveryAction::Continue
@@ -204,11 +205,15 @@ impl Superblock {
         layout.validate()?;
         let mut uuid = [0; 16];
         uuid.copy_from_slice(&i[24..40]);
+        let root_inode = g64(i, 120);
+        if root_inode == 0 {
+            return Err(Error::Corrupt);
+        }
         Ok(Self {
             generation: g64(i, 16),
             uuid,
             layout,
-            root_inode: g64(i, 120),
+            root_inode,
             journal_sequence: g64(i, 128),
             state,
         })
@@ -230,19 +235,47 @@ pub enum RecoveryAction {
     RunFsck,
 }
 
-pub fn read_superblock(device: &mut impl BlockDevice) -> Result<(Superblock, u64), Error> {
+fn select_superblock(device: &mut impl BlockDevice) -> Result<(Superblock, u64, bool), Error> {
     let mut b = [0; BLOCK_SIZE];
-    let mut best: Option<(Superblock, u64)> = None;
+    let mut valid = [None, None];
+    let mut saw_io_error = false;
     for slot in [0, 1] {
-        if device.read(slot, &mut b).is_ok() {
-            if let Ok(s) = Superblock::decode(&b) {
-                if best.map_or(true, |(x, _)| s.generation > x.generation) {
-                    best = Some((s, slot));
-                }
+        match device.read(slot as u64, &mut b) {
+            Ok(()) => {
+                valid[slot] = Superblock::decode(&b).ok();
             }
+            Err(_) => saw_io_error = true,
         }
     }
-    best.ok_or(Error::Corrupt)
+    match (valid[0], valid[1]) {
+        (Some(a), Some(b)) => {
+            if a.uuid != b.uuid || a.layout != b.layout || a.root_inode != b.root_inode {
+                return Err(Error::Conflict);
+            }
+            if a.generation == b.generation {
+                if a != b {
+                    return Err(Error::Conflict);
+                }
+                Ok((a, 0, false))
+            } else if a.generation > b.generation {
+                Ok((a, 0, false))
+            } else {
+                Ok((b, 1, false))
+            }
+        }
+        (Some(a), None) => Ok((a, 0, true)),
+        (None, Some(b)) => Ok((b, 1, true)),
+        (None, None) if saw_io_error => Err(Error::Io),
+        (None, None) => Err(Error::Corrupt),
+    }
+}
+
+pub fn read_superblock(device: &mut impl BlockDevice) -> Result<(Superblock, u64), Error> {
+    let (superblock, slot, _) = select_superblock(device)?;
+    if superblock.layout.total_blocks > device.block_count() {
+        return Err(Error::InvalidLayout);
+    }
+    Ok((superblock, slot))
 }
 pub fn write_superblock(
     device: &mut impl BlockDevice,
@@ -254,6 +287,79 @@ pub fn write_superblock(
     device.write(target, &sb.encode())?;
     device.flush()?;
     Ok(target)
+}
+
+fn persist_superblock(
+    device: &mut impl BlockDevice,
+    current_slot: u64,
+    mut superblock: Superblock,
+) -> Result<(Superblock, u64), Error> {
+    superblock.generation = superblock
+        .generation
+        .checked_add(1)
+        .ok_or(Error::Conflict)?;
+    let target = 1 - (current_slot & 1);
+    device.write(target, &superblock.encode())?;
+    device.flush()?;
+    Ok((superblock, target))
+}
+
+/// Result of selecting and transitioning NovaFS mount metadata. This does not
+/// represent a mounted filesystem or provide inode/path operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MountMetadata {
+    pub superblock: Superblock,
+    pub active_slot: u64,
+    pub replayed_writes: usize,
+    pub degraded_mirror: bool,
+}
+
+/// Selects consistent mirrored metadata, records the dirty mounted state and,
+/// after an unclean prior mount, replays the existing journal before returning.
+/// A replay failure is persisted as `NeedsFsck` and returned to the caller.
+pub fn prepare_mount(device: &mut impl BlockDevice) -> Result<MountMetadata, Error> {
+    let (mut superblock, mut active_slot, degraded_mirror) = select_superblock(device)?;
+    if superblock.layout.total_blocks > device.block_count() {
+        return Err(Error::InvalidLayout);
+    }
+    if superblock.state == CleanState::NeedsFsck {
+        return Err(Error::Corrupt);
+    }
+    let action = superblock.transition(MountEvent::Mount)?;
+    (superblock, active_slot) = persist_superblock(device, active_slot, superblock)?;
+    let mut replayed_writes = 0;
+    if action == RecoveryAction::ReplayJournal {
+        match Journal::replay(device, &superblock) {
+            Ok(count) => {
+                replayed_writes = count;
+                superblock.transition(MountEvent::ReplayOk)?;
+                (superblock, active_slot) = persist_superblock(device, active_slot, superblock)?;
+            }
+            Err(error) => {
+                superblock.transition(MountEvent::ReplayFailed)?;
+                persist_superblock(device, active_slot, superblock)?;
+                return Err(error);
+            }
+        }
+    }
+    Ok(MountMetadata {
+        superblock,
+        active_slot,
+        replayed_writes,
+        degraded_mirror,
+    })
+}
+
+/// Persists a clean-unmount transition for metadata returned by
+/// [`prepare_mount`].
+pub fn mark_clean_unmount(
+    device: &mut impl BlockDevice,
+    mut mounted: MountMetadata,
+) -> Result<MountMetadata, Error> {
+    mounted.superblock.transition(MountEvent::Unmount)?;
+    (mounted.superblock, mounted.active_slot) =
+        persist_superblock(device, mounted.active_slot, mounted.superblock)?;
+    Ok(mounted)
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -296,7 +402,12 @@ pub struct Inode {
 }
 impl Inode {
     pub fn validate(&self, total: u64) -> Result<(), Error> {
-        if self.number == 0 || self.links == 0 || self.extent_count as usize > MAX_EXTENTS {
+        if self.number == 0
+            || self.links == 0
+            || self.mode & !0o777 != 0
+            || self.extent_count as usize > MAX_EXTENTS
+            || (self.xattr_block != 0 && self.xattr_block >= total)
+        {
             return Err(Error::Corrupt);
         };
         let mut last = 0;
@@ -307,7 +418,10 @@ impl Inode {
             if !e.valid(total) || (n > 0 && e.logical < last) {
                 return Err(Error::Corrupt);
             }
-            last = e.logical + e.blocks as u64;
+            last = e
+                .logical
+                .checked_add(e.blocks as u64)
+                .ok_or(Error::Corrupt)?;
         }
         Ok(())
     }
@@ -334,6 +448,45 @@ impl Inode {
         let c = checksum(&o[..252]);
         p32(&mut o, 252, c);
         o
+    }
+
+    pub fn decode(i: &[u8; 256], total_blocks: u64) -> Result<Self, Error> {
+        if g32(i, 252) != checksum(&i[..252]) {
+            return Err(Error::Corrupt);
+        }
+        let kind = match i[16] {
+            1 => InodeKind::File,
+            2 => InodeKind::Directory,
+            3 => InodeKind::Symlink,
+            4 => InodeKind::Device,
+            _ => return Err(Error::Corrupt),
+        };
+        let mut extents = [Extent::default(); MAX_EXTENTS];
+        for (n, extent) in extents.iter_mut().enumerate() {
+            let at = 64 + n * 28;
+            *extent = Extent {
+                logical: g64(i, at),
+                physical: g64(i, at + 8),
+                blocks: g32(i, at + 16),
+                flags: g16(i, at + 20),
+            };
+        }
+        let inode = Self {
+            number: g64(i, 0),
+            generation: g64(i, 8),
+            kind,
+            mode: g16(i, 18),
+            uid: g32(i, 20),
+            gid: g32(i, 24),
+            size: g64(i, 32),
+            links: g32(i, 40),
+            extent_count: i[17],
+            extents,
+            xattr_block: g64(i, 48),
+            quota_id: g32(i, 56),
+        };
+        inode.validate(total_blocks)?;
+        Ok(inode)
     }
 }
 
@@ -823,6 +976,92 @@ mod tests {
         assert_eq!(read_superblock(&mut d).unwrap().0.generation, 9)
     }
     #[test]
+    fn clean_mount_is_persisted_dirty_then_clean_across_mirrors() {
+        let mut d = Mem::new(128);
+        let a = sb();
+        let mut b = a;
+        b.generation = 5;
+        d.write(0, &a.encode()).unwrap();
+        d.write(1, &b.encode()).unwrap();
+
+        let mounted = prepare_mount(&mut d).unwrap();
+        assert_eq!(mounted.superblock.state, CleanState::Mounted);
+        assert_eq!(mounted.superblock.generation, 6);
+        assert_eq!(mounted.active_slot, 0);
+        assert_eq!(mounted.replayed_writes, 0);
+        assert!(!mounted.degraded_mirror);
+
+        let unmounted = mark_clean_unmount(&mut d, mounted).unwrap();
+        assert_eq!(unmounted.superblock.state, CleanState::Clean);
+        assert_eq!(unmounted.superblock.generation, 7);
+        assert_eq!(unmounted.active_slot, 1);
+        assert_eq!(read_superblock(&mut d).unwrap(), (unmounted.superblock, 1));
+    }
+    #[test]
+    fn dirty_mount_replays_committed_journal_before_returning() {
+        let mut d = Mem::new(128);
+        let mut s = sb();
+        s.state = CleanState::Mounted;
+        d.write(0, &s.encode()).unwrap();
+        let mut payload = [0u8; BLOCK_SIZE];
+        payload[19] = 77;
+        d.b[s.layout.journal_start as usize] = journal_header(9, 1, TxState::Committed);
+        d.b[s.layout.journal_start as usize + 1] = journal_record(30, &payload);
+        d.b[s.layout.journal_start as usize + 2] = payload;
+
+        let mounted = prepare_mount(&mut d).unwrap();
+        assert_eq!(mounted.superblock.state, CleanState::Mounted);
+        assert_eq!(mounted.replayed_writes, 1);
+        assert_eq!(d.b[30][19], 77);
+        assert_eq!(
+            parse_header(&d.b[s.layout.journal_start as usize])
+                .unwrap()
+                .2,
+            TxState::Applied
+        );
+    }
+    #[test]
+    fn one_corrupt_mirror_is_degraded_but_both_corrupt_fail_closed() {
+        let mut degraded = Mem::new(128);
+        degraded.write(0, &sb().encode()).unwrap();
+        degraded.b[1][0] = 0xff;
+        let mounted = prepare_mount(&mut degraded).unwrap();
+        assert!(mounted.degraded_mirror);
+
+        let mut corrupt = Mem::new(128);
+        let before = corrupt.b.clone();
+        assert_eq!(prepare_mount(&mut corrupt), Err(Error::Corrupt));
+        assert_eq!(corrupt.b, before);
+    }
+    #[test]
+    fn inconsistent_valid_mirrors_fail_closed() {
+        let mut d = Mem::new(128);
+        let a = sb();
+        let mut split_brain = a;
+        split_brain.journal_sequence += 1;
+        d.write(0, &a.encode()).unwrap();
+        d.write(1, &split_brain.encode()).unwrap();
+        assert_eq!(prepare_mount(&mut d), Err(Error::Conflict));
+
+        split_brain.generation += 1;
+        split_brain.uuid = [9; 16];
+        d.write(1, &split_brain.encode()).unwrap();
+        assert_eq!(prepare_mount(&mut d), Err(Error::Conflict));
+    }
+    #[test]
+    fn corrupt_replay_marks_volume_needs_fsck_and_stays_closed() {
+        let mut d = Mem::new(128);
+        let mut s = sb();
+        s.state = CleanState::Mounted;
+        d.write(0, &s.encode()).unwrap();
+        d.b[s.layout.journal_start as usize] = journal_header(9, 1, TxState::Committed);
+        // The zero record targets metadata block zero, which replay must reject.
+        assert_eq!(prepare_mount(&mut d), Err(Error::Corrupt));
+        let (persisted, _) = read_superblock(&mut d).unwrap();
+        assert_eq!(persisted.state, CleanState::NeedsFsck);
+        assert_eq!(prepare_mount(&mut d), Err(Error::Corrupt));
+    }
+    #[test]
     fn corrupt_mirror_is_repairable() {
         let mut d = Mem::new(128);
         d.write(0, &sb().encode()).unwrap();
@@ -882,6 +1121,56 @@ mod tests {
         let mut p = RepairPlan::new();
         Fsck::verify_inode(&i, &s, &bm, &mut p);
         assert_eq!(p.len, 2)
+    }
+    #[test]
+    fn inode_decode_roundtrips_and_rejects_corruption() {
+        let mut extents = [Extent::default(); MAX_EXTENTS];
+        extents[0] = Extent {
+            logical: 0,
+            physical: 20,
+            blocks: 2,
+            flags: 3,
+        };
+        let inode = Inode {
+            number: 2,
+            generation: 7,
+            kind: InodeKind::File,
+            mode: 0o640,
+            uid: 1000,
+            gid: 100,
+            size: 5000,
+            links: 1,
+            extent_count: 1,
+            extents,
+            xattr_block: 40,
+            quota_id: 1000,
+        };
+        let encoded = inode.encode();
+        assert_eq!(Inode::decode(&encoded, 128), Ok(inode));
+
+        let mut bad_checksum = encoded;
+        bad_checksum[20] ^= 1;
+        assert_eq!(Inode::decode(&bad_checksum, 128), Err(Error::Corrupt));
+
+        let mut bad_kind = encoded;
+        bad_kind[16] = 99;
+        let sum = checksum(&bad_kind[..252]);
+        p32(&mut bad_kind, 252, sum);
+        assert_eq!(Inode::decode(&bad_kind, 128), Err(Error::Corrupt));
+
+        let mut bad_extent = inode;
+        bad_extent.extents[0].physical = 127;
+        assert_eq!(
+            Inode::decode(&bad_extent.encode(), 128),
+            Err(Error::Corrupt)
+        );
+
+        let mut overflowing_logical_extent = inode;
+        overflowing_logical_extent.extents[0].logical = u64::MAX;
+        assert_eq!(
+            Inode::decode(&overflowing_logical_extent.encode(), 128),
+            Err(Error::Corrupt)
+        );
     }
     #[test]
     fn directory_rejects_invalid_names() {
