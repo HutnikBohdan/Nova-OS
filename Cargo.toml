@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
 members = ["agent-core", "ai-core", "apps-core", "browser-core", "build-core", "compiler-core", "compositor-core", "crypto-core", "deployment-core", "desktop-core", "driver-core", "hardware-core", "image-builder", "installer-core", "kernel", "loader-core", "locale-core", "media-core", "memory-core", "net-core", "novafs-core", "pki-core", "platform-core", "productivity-core", "runtime-core", "security-core", "socket-core", "storage-core", "tls-core", "usb-core", "vfs-core", "virtio-core", "vm-lab"]
+exclude = [
+    "vendor/bootloader-x86_64-bios-boot-sector-0.11.15",
+    "vendor/bootloader-x86_64-bios-stage-2-0.11.15",
+    "vendor/bootloader-x86_64-bios-stage-3-0.11.15",
+    "vendor/bootloader-x86_64-bios-stage-4-0.11.15",
+    "vendor/bootloader-x86_64-uefi-0.11.15",
+]
 
 [package]
 name = "nova-os"
@@ -10,6 +17,20 @@ edition = "2024"
 [dependencies]
 ovmf-prebuilt = "0.2.4"
 
+[features]
+default = []
+legacy-monolith-proofs = ["kernel/legacy-monolith-proofs"]
+guardian-fault-injection = [
+    "legacy-monolith-proofs",
+    "kernel/guardian-fault-injection",
+]
+
 [build-dependencies]
 kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 bootloader = "0.11.15"
+
+[patch.crates-io]
+# Upstream bootloader installs its stage crates by registry name from build.rs,
+# which cannot work with Cargo's offline directory source. Nova's tiny fork
+# keeps the implementation but resolves the pinned stage crates by local path.
+bootloader = { path = "third-party/bootloader" }

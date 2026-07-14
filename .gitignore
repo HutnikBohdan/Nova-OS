@@ -3,6 +3,12 @@ target/
 /tools/*
 !/tools/virtio-trace-events
 /vm-data/
+/.nova-cargo-home/
+/build-support/offline-cargo-home/.package-cache
+/build-support/offline-cargo-home/.package-cache-mutate
+/build-support/offline-cargo-home/.global-cache
+/build-support/offline-cargo-home/registry/
+/build-support/offline-cargo-home/git/
 *.ppm
 **/Cargo.lock
 !/Cargo.lock

@@ -1,0 +1,23 @@
+[package]
+name = "uefi-macros"
+version = "0.11.0"
+authors = ["The Rust OSDev team"]
+readme = "README.md"
+edition = "2021"
+description = "Procedural macros for the `uefi` crate."
+repository = "https://github.com/rust-osdev/uefi-rs"
+keywords = ["uefi", "efi"]
+categories = ["embedded", "no-std", "api-bindings"]
+license = "MPL-2.0"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0.28"
+quote = "1.0.9"
+syn = { version = "1.0.74", features = ["full"] }
+
+[dev-dependencies]
+trybuild = "1.0.61"
+uefi = { version = "0.19.0", default-features = false }

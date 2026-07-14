@@ -7,11 +7,13 @@ same capabilities as the interactive user (files, processes, UI, network, and
 development tools).
 
 This repository is **not** a Linux distribution and does not wrap Windows. The
-current milestone boots its own `no_std` kernel through BIOS or UEFI and opens
-Nova Desktop: an adaptive framebuffer shell with a PS/2 mouse cursor, clickable
-Ukrainian Домівка/Файли/Термінал/Nova AI/Браузер/Редактор/Програми,
-keyboard shortcuts, a small RAM filesystem,
-and a deterministic operator/tool router. A neural model is not included yet.
+current milestone boots its own `no_std` kernel through BIOS or UEFI. The
+default image is microkernel-only: boot, memory isolation, ring-3 processes,
+IPC proof, preemptive scheduling, and deferred address-space reclamation. The
+existing framebuffer desktop, Guardian, compiler, browser, and AI smoke
+environment remains available through the explicit `legacy-monolith-proofs`
+feature while those components are moved to standalone user-space services. A
+neural model is not included yet.
 
 ![Nova Desktop — актуальний QEMU runtime](docs/nova-desktop-current.png)
 
@@ -24,12 +26,13 @@ The current implementation follows the approved high-fidelity design reference:
 
 ## Build and run
 
-Requirements: Rustup with nightly Rust, `llvm-tools`, and QEMU x86-64.
+Requirements: Rustup. The repository pins nightly Rust and commits all Cargo
+source dependencies, including bootloader stages and `build-std` dependencies.
 
 ```powershell
-cargo build
-cargo test -p agent-core
-cargo run -- uefi
+powershell -ExecutionPolicy Bypass -File scripts\Verify-NovaBuildEnvironment.ps1 -Build
+cargo build --release --offline --locked
+cargo build --release --offline --locked --features legacy-monolith-proofs
 ```
 
 Disk images are copied to `dist/nova-os-uefi.img` and
@@ -86,7 +89,10 @@ treated as proof that a hardware path is already integrated.
 
 See [docs/RESEARCH.md](docs/RESEARCH.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md), [docs/BROWSER.md](docs/BROWSER.md), and
-[docs/ROADMAP.md](docs/ROADMAP.md).
+[docs/ROADMAP.md](docs/ROADMAP.md). Clone-to-build inputs are documented in
+[docs/REPRODUCIBLE_BUILDS.md](docs/REPRODUCIBLE_BUILDS.md); process ownership in
+[docs/PROCESS_OWNERSHIP.md](docs/PROCESS_OWNERSHIP.md); and the installable,
+self-repacking target in [docs/DEVELOPER_IMAGE.md](docs/DEVELOPER_IMAGE.md).
 
 ## GitHub source and development builds
 

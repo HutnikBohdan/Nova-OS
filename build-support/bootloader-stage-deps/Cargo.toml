@@ -1,0 +1,17 @@
+[package]
+name = "nova-bootloader-stage-deps"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# bootloader 0.11.15 installs these packages from its build script. They are
+# listed explicitly so `cargo vendor --sync` includes the otherwise hidden
+# nested build graph required for a truly offline BIOS/UEFI image build.
+[dependencies]
+bootloader-x86_64-bios-boot-sector = "=0.11.15"
+bootloader-x86_64-bios-stage-2 = "=0.11.15"
+bootloader-x86_64-bios-stage-3 = "=0.11.15"
+bootloader-x86_64-bios-stage-4 = "=0.11.15"
+bootloader-x86_64-uefi = "=0.11.15"
+
+[workspace]

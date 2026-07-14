@@ -4,43 +4,74 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-agent-core = { path = "../agent-core" }
-ai-core = { path = "../ai-core" }
-apps-core = { path = "../apps-core" }
-browser-core = { path = "../browser-core" }
-build-core = { path = "../build-core" }
-compositor-core = { path = "../compositor-core" }
-compiler-core = { path = "../compiler-core" }
-deployment-core = { path = "../deployment-core" }
-driver-core = { path = "../driver-core" }
-hardware-core = { path = "../hardware-core" }
-desktop-core = { path = "../desktop-core" }
-installer-core = { path = "../installer-core" }
-loader-core = { path = "../loader-core" }
-locale-core = { path = "../locale-core" }
-media-core = { path = "../media-core" }
+agent-core = { path = "../agent-core", optional = true }
+ai-core = { path = "../ai-core", optional = true }
+apps-core = { path = "../apps-core", optional = true }
+browser-core = { path = "../browser-core", optional = true }
+build-core = { path = "../build-core", optional = true }
+compositor-core = { path = "../compositor-core", optional = true }
+compiler-core = { path = "../compiler-core", optional = true }
+deployment-core = { path = "../deployment-core", optional = true }
+driver-core = { path = "../driver-core", optional = true }
+hardware-core = { path = "../hardware-core", optional = true }
+desktop-core = { path = "../desktop-core", optional = true }
+installer-core = { path = "../installer-core", optional = true }
+loader-core = { path = "../loader-core", optional = true }
+locale-core = { path = "../locale-core", optional = true }
+media-core = { path = "../media-core", optional = true }
 memory-core = { path = "../memory-core" }
-net-core = { path = "../net-core" }
-novafs-core = { path = "../novafs-core" }
-pki-core = { path = "../pki-core" }
-platform-core = { path = "../platform-core" }
-productivity-core = { path = "../productivity-core" }
+net-core = { path = "../net-core", optional = true }
+novafs-core = { path = "../novafs-core", optional = true }
+pki-core = { path = "../pki-core", optional = true }
+platform-core = { path = "../platform-core", optional = true }
+productivity-core = { path = "../productivity-core", optional = true }
 runtime-core = { path = "../runtime-core" }
-security-core = { path = "../security-core" }
-socket-core = { path = "../socket-core" }
-storage-core = { path = "../storage-core" }
-tls-core = { path = "../tls-core" }
-usb-core = { path = "../usb-core" }
-vfs-core = { path = "../vfs-core" }
-virtio-core = { path = "../virtio-core" }
+security-core = { path = "../security-core", optional = true }
+socket-core = { path = "../socket-core", optional = true }
+storage-core = { path = "../storage-core", optional = true }
+tls-core = { path = "../tls-core", optional = true }
+usb-core = { path = "../usb-core", optional = true }
+vfs-core = { path = "../vfs-core", optional = true }
+virtio-core = { path = "../virtio-core", optional = true }
 bootloader_api = "0.11.15"
 x86_64 = { version = "0.15.2", default-features = false, features = ["instructions"] }
 
 [build-dependencies]
-fontdue = "0.9.3"
+fontdue = { version = "0.9.3", optional = true }
 
 [features]
-guardian-fault-injection = []
+default = []
+legacy-monolith-proofs = [
+    "dep:agent-core",
+    "dep:ai-core",
+    "dep:apps-core",
+    "dep:browser-core",
+    "dep:build-core",
+    "dep:compositor-core",
+    "dep:compiler-core",
+    "dep:deployment-core",
+    "dep:desktop-core",
+    "dep:driver-core",
+    "dep:fontdue",
+    "dep:hardware-core",
+    "dep:installer-core",
+    "dep:loader-core",
+    "dep:locale-core",
+    "dep:media-core",
+    "dep:net-core",
+    "dep:novafs-core",
+    "dep:pki-core",
+    "dep:platform-core",
+    "dep:productivity-core",
+    "dep:security-core",
+    "dep:socket-core",
+    "dep:storage-core",
+    "dep:tls-core",
+    "dep:usb-core",
+    "dep:vfs-core",
+    "dep:virtio-core",
+]
+guardian-fault-injection = ["legacy-monolith-proofs"]
 
 [[bin]]
 name = "kernel"

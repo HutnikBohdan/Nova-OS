@@ -1,6 +1,10 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    // Cargo can otherwise consider the image publisher fresh when switching
+    // between the production microkernel and the explicit legacy proof graph.
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_LEGACY_MONOLITH_PROOFS");
+    println!("cargo:rerun-if-env-changed=CARGO_FEATURE_GUARDIAN_FAULT_INJECTION");
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is missing"));
     let kernel = PathBuf::from(
         env::var_os("CARGO_BIN_FILE_KERNEL_kernel").expect("kernel artifact is missing"),

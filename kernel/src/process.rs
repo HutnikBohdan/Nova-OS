@@ -94,6 +94,7 @@ impl UserModeSelectors {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrepareError<E> {
     InvalidSelectors,
+    #[cfg(feature = "legacy-monolith-proofs")]
     ImageTooLarge,
     Map(E),
     Write(E),
@@ -277,6 +278,7 @@ pub fn prepare_ipc_process<A: UserAddressSpace>(
     Ok(process)
 }
 
+#[cfg(feature = "legacy-monolith-proofs")]
 pub fn prepare_compiled_process<A: UserAddressSpace>(
     address_space: &mut A,
     selectors: UserModeSelectors,

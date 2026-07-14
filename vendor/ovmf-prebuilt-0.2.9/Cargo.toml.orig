@@ -1,0 +1,17 @@
+[package]
+name = "ovmf-prebuilt"
+version = "0.2.9"
+edition.workspace = true
+categories = ["development-tools"]
+keywords = ["edk2", "firmware", "ovmf", "prebuilt"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rust-osdev/ovmf-prebuilt"
+description = "Library to download and cache OVMF prebuilt binaries"
+
+[dependencies]
+base16ct = "1.0.0"
+log = "0.4"
+lzma-rs = "0.3"
+sha2 = "0.11"
+tar = "0.4"
+ureq.workspace = true

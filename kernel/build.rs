@@ -1,7 +1,15 @@
+#[cfg(feature = "legacy-monolith-proofs")]
 use fontdue::{Font, FontSettings};
+#[cfg(feature = "legacy-monolith-proofs")]
 use std::{env, fmt::Write as _, fs, path::PathBuf};
 
 fn main() {
+    #[cfg(feature = "legacy-monolith-proofs")]
+    build_font_atlas();
+}
+
+#[cfg(feature = "legacy-monolith-proofs")]
+fn build_font_atlas() {
     println!("cargo:rerun-if-changed=assets/InterDisplay-Regular.ttf");
     println!("cargo:rerun-if-changed=assets/InterDisplay-SemiBold.ttf");
     let regular = load("assets/InterDisplay-Regular.ttf");
@@ -15,11 +23,13 @@ fn main() {
     fs::write(out.join("inter_atlas.rs"), source).expect("failed to write Inter atlas");
 }
 
+#[cfg(feature = "legacy-monolith-proofs")]
 fn load(path: &str) -> Font {
     let bytes = fs::read(path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
     Font::from_bytes(bytes, FontSettings::default()).expect("invalid Inter font")
 }
 
+#[cfg(feature = "legacy-monolith-proofs")]
 fn bake(source: &mut String, font: &Font, prefix: &str, function: &str, px: f32) {
     for code in (32u32..=126).chain(0x0400u32..=0x04ff) {
         let ch = char::from_u32(code).unwrap();

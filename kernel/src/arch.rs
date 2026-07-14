@@ -29,10 +29,14 @@ static mut GDT: GlobalDescriptorTable = GlobalDescriptorTable::new();
 static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
 static mut PROOF: Ring3Proof = Ring3Proof::Waiting;
 static mut CRASH_WAITING: bool = false;
+#[cfg(feature = "legacy-monolith-proofs")]
 static mut RUNTIME_BOOT_INFO: *const BootInfo = core::ptr::null();
+#[cfg(feature = "legacy-monolith-proofs")]
 static mut RUNTIME_USER_CODE: u16 = 0;
+#[cfg(feature = "legacy-monolith-proofs")]
 static mut RUNTIME_USER_DATA: u16 = 0;
 
+#[cfg(feature = "legacy-monolith-proofs")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompiledRunError {
     RuntimeUnavailable,
@@ -451,9 +455,11 @@ fn run_ipc_app(boot_info: &BootInfo, selectors: UserModeSelectors) {
         );
     }
     crate::serial::write_str("NOVA_RING3_IPC_ROUNDTRIP_OK\n");
+    #[cfg(feature = "legacy-monolith-proofs")]
     run_compiled_app(boot_info, selectors);
 }
 
+#[cfg(feature = "legacy-monolith-proofs")]
 fn run_compiled_app(boot_info: &BootInfo, selectors: UserModeSelectors) {
     let mut workspace = compiler_core::Workspace::new();
     let mut elf = [0u8; 8192];
@@ -496,6 +502,7 @@ fn run_compiled_app(boot_info: &BootInfo, selectors: UserModeSelectors) {
 }
 
 pub fn enable_runtime_interrupts(boot_info: &BootInfo, selectors: UserModeSelectors) {
+    #[cfg(feature = "legacy-monolith-proofs")]
     unsafe {
         RUNTIME_BOOT_INFO = boot_info as *const BootInfo;
         RUNTIME_USER_CODE = selectors.code();
@@ -518,6 +525,7 @@ pub fn enable_runtime_interrupts(boot_info: &BootInfo, selectors: UserModeSelect
 
 /// Compiles NovaRust source inside Nova OS and launches the resulting native
 /// code in a fresh ring-3 address space.
+#[cfg(feature = "legacy-monolith-proofs")]
 pub fn run_compiled_source(source: &str) -> Result<i32, CompiledRunError> {
     let (boot_info, selectors) = unsafe {
         let boot_info = RUNTIME_BOOT_INFO

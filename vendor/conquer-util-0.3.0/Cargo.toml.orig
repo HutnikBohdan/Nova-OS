@@ -1,0 +1,37 @@
+[package]
+name = "conquer-util"
+description = "utilities for concurrent and lock-free programming"
+version = "0.3.0"
+authors = ["Oliver Giersch"]
+license = "MIT/Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/oliver-giersch/conquer-util.git"
+documentation = "https://docs.rs/conquer-util"
+keywords = ["concurrent", "lock-free", "utilities"]
+categories = ["concurrency", "no-std"]
+edition = "2018"
+exclude = [".github/"]
+
+[features]
+default  = ["std"]
+
+std      = []
+
+align    = []
+alloc    = []
+back-off = []
+random   = ["back-off", "rand"]
+tls      = ["alloc"]
+
+[dependencies.rand]
+version = "0.7.3"
+optional = true
+default-features = false
+features = ["small_rng"]
+
+[[bench]]
+name = "backoff"
+required-features = ["back-off"]
+
+[package.metadata.docs.rs]
+all-features = true

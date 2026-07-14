@@ -1,0 +1,15 @@
+[unstable]
+bindeps = true
+
+[net]
+offline = true
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "../../vendor"
+
+[env]
+NOVA_VENDOR_DIR = { value = "../../vendor", relative = true }
+CARGO_TARGET_DIR = { value = "../../target", relative = true }

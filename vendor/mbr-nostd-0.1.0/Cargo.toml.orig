@@ -1,0 +1,16 @@
+[package]
+name = "mbr-nostd"
+version = "0.1.0"
+authors = ["ischeinkman <scheinkman.ilan@gmail.com>"]
+license= "Apache-2.0"
+categories = ["embedded", "filesystem", "no-std"]
+keywords = ["mbr", "partition", "bios"]
+repository = "https://github.com/ischeinkman/mbr-nostd"
+description = "A `no-std` crate for parsing and interacting with a Master Boot Record."
+
+[dependencies]
+
+
+[dependencies.byteorder]
+version = "1.2.7"
+default-features = false
