@@ -207,6 +207,7 @@ fn execute(fs: &mut RamFs, intent: Intent<'_>) {
             println!("ядро: активне; стільниця: активна; файлова система: RAMFS");
             println!("оператор: повносистемний; локальну модель ще не завантажено");
         }
+        Intent::History => show_guardian_history(fs),
         Intent::List => fs.paths(|path| println!("{path}")),
         Intent::Read { path } => match fs.read(path) {
             Ok(text) => println!("{text}"),
@@ -225,6 +226,7 @@ fn execute(fs: &mut RamFs, intent: Intent<'_>) {
             mutation_result(fs, outcome);
         }
         Intent::BuildRun { path } => run_project(fs, path),
+        Intent::Rollback { action_id } => guardian_manual_rollback(fs, action_id),
         Intent::Run {
             program: "echo",
             args,
@@ -265,8 +267,154 @@ pub fn self_hosting_boot_proof(fs: &mut RamFs) {
     }
 }
 
+fn show_guardian_history(fs: &RamFs) {
+    let Some(journal) = load_guardian(fs) else {
+        println!("Журнал Nova Guardian пошкоджено; потрібен recovery.");
+        return;
+    };
+    println!("Історія Nova Guardian:");
+    for (index, record) in journal.records().iter().enumerate() {
+        if journal.records()[index + 1..]
+            .iter()
+            .any(|later| later.action_id == record.action_id)
+        {
+            continue;
+        }
+        println!(
+            "#{}  {}  {}",
+            record.action_id,
+            guardian_kind_label(record.kind),
+            guardian_phase_label(record.phase)
+        );
+    }
+}
+
+fn guardian_manual_rollback(fs: &mut RamFs, target_action: u32) {
+    let Some(mut journal) = load_guardian(fs) else {
+        println!("Відкат заблоковано: журнал Guardian пошкоджено.");
+        return;
+    };
+    let Some(target) = journal.latest_record(target_action).copied() else {
+        println!("Дію #{target_action} не знайдено.");
+        return;
+    };
+    if target.phase != ai_core::journal::Phase::Verified
+        || !matches!(
+            target.kind,
+            ActionKind::FileWrite
+                | ActionKind::FileCreate
+                | ActionKind::FileDelete
+                | ActionKind::Rollback
+        )
+    {
+        println!("Дія #{target_action} не є перевіреною файловою зміною.");
+        return;
+    }
+    let mut target_snapshot = [0u8; 1536];
+    let Some(target_len) = crate::virtio_block::read_snapshot(target_action, &mut target_snapshot)
+    else {
+        println!("Знімок #{target_action} вже недоступний у кільцевому сховищі.");
+        return;
+    };
+    let Some((target_existed, path, target_content)) =
+        decode_snapshot(&target_snapshot[..target_len])
+    else {
+        println!("Знімок #{target_action} не пройшов перевірку.");
+        return;
+    };
+    let rollback_action = journal.next_action_id();
+    let rollback_intent = Intent::Delete { path };
+    let Some((_, _, before_hash, inverse, inverse_len)) =
+        prepare_guardian_snapshot(fs, rollback_intent, rollback_action)
+    else {
+        println!("Guardian не зміг захистити сам відкат знімком.");
+        return;
+    };
+    let Ok(action) = journal.plan(
+        target_action,
+        ActionKind::Rollback,
+        Capability::System,
+        before_hash,
+        &inverse[..inverse_len],
+    ) else {
+        println!("Журнал Guardian заповнений; відкат не виконано.");
+        return;
+    };
+    if action != rollback_action
+        || journal.approve(action).is_err()
+        || !persist_guardian(fs, &journal)
+    {
+        println!("Не вдалося надійно записати план відкату.");
+        return;
+    }
+    let changed = if target_existed {
+        fs.write(path, target_content).is_ok()
+    } else {
+        matches!(fs.delete(path), Ok(()) | Err(crate::fs::FsError::NotFound))
+    };
+    let after_hash = fs.read_bytes(path).map(hash64).unwrap_or(0);
+    if !changed || journal.applied(action, after_hash).is_err() || !persist_guardian(fs, &journal) {
+        println!("Відкат не дійшов до checkpoint; потрібен recovery.");
+        return;
+    }
+    if after_hash != target.before_hash {
+        let restored = restore_guardian_snapshot(fs, rollback_intent, inverse[0]);
+        if restored && journal.revert(action, before_hash).is_ok() && persist_guardian(fs, &journal)
+        {
+            println!("Перевірка відкату не пройшла; стан до відкату відновлено.");
+        }
+        return;
+    }
+    if journal.verify(action, after_hash).is_ok() && persist_guardian(fs, &journal) {
+        let _ = crate::ata::persist(fs);
+        crate::serial::write_str("NOVA_GUARDIAN_MANUAL_ROLLBACK_OK\n");
+        println!("Дію #{target_action} відкочено і перевірено. Нова транзакція: #{action}.");
+    }
+}
+
+fn decode_snapshot(payload: &[u8]) -> Option<(bool, &str, &[u8])> {
+    if payload.len() < 2 || payload[0] > 1 {
+        return None;
+    }
+    let path_len = payload[1] as usize;
+    if path_len == 0 || payload.len() < 2 + path_len {
+        return None;
+    }
+    let path = core::str::from_utf8(&payload[2..2 + path_len]).ok()?;
+    Some((payload[0] == 1, path, &payload[2 + path_len..]))
+}
+
+fn guardian_kind_label(kind: ActionKind) -> &'static str {
+    match kind {
+        ActionKind::FileWrite => "запис файлу",
+        ActionKind::FileCreate => "створення файлу",
+        ActionKind::FileDelete => "видалення файлу",
+        ActionKind::Build => "збірка",
+        ActionKind::Launch => "запуск",
+        ActionKind::Setting => "налаштування",
+        ActionKind::Package => "пакет",
+        ActionKind::SystemUpdate => "оновлення",
+        ActionKind::Rollback => "відкат",
+    }
+}
+
+fn guardian_phase_label(phase: ai_core::journal::Phase) -> &'static str {
+    match phase {
+        ai_core::journal::Phase::Planned => "заплановано",
+        ai_core::journal::Phase::Approved => "схвалено",
+        ai_core::journal::Phase::Applied => "застосовано",
+        ai_core::journal::Phase::Verified => "перевірено",
+        ai_core::journal::Phase::Failed => "помилка",
+        ai_core::journal::Phase::Reverted => "відкочено",
+    }
+}
+
 fn route_request(fs: &mut RamFs, prompt: &str) {
     let parsed = parse(prompt);
+    if let Intent::Rollback { action_id } = parsed {
+        guardian_manual_rollback(fs, action_id);
+        return;
+    }
     if matches!(parsed, Intent::Unknown { .. } | Intent::Ask { .. }) {
         println!("Локальну мовну модель ще не завантажено.");
         println!("Спробуйте пряму команду: прочитай, запиши, додай, видали, запусти.");
@@ -297,8 +445,9 @@ fn route_request(fs: &mut RamFs, prompt: &str) {
         };
         let mut guarded_action = None;
         if mutating {
+            let action_id = guardian.next_action_id();
             let Some((kind, capability, before_hash, inverse, inverse_len)) =
-                prepare_guardian_snapshot(fs, parsed)
+                prepare_guardian_snapshot(fs, parsed, action_id)
             else {
                 println!("Nova Guardian не зміг створити повний знімок до зміни.");
                 return;
@@ -426,8 +575,9 @@ pub fn guardian_boot_proof(fs: &mut RamFs) {
         path: PATH,
         text: VALUE,
     };
+    let action_id = recovered.next_action_id();
     let Some((kind, capability, before, inverse, inverse_len)) =
-        prepare_guardian_snapshot(fs, intent)
+        prepare_guardian_snapshot(fs, intent, action_id)
     else {
         return;
     };
@@ -544,6 +694,7 @@ fn persist_guardian(fs: &mut RamFs, journal: &Journal<32>) -> bool {
 fn prepare_guardian_snapshot(
     fs: &mut RamFs,
     intent: Intent<'_>,
+    action_id: u32,
 ) -> Option<(ActionKind, Capability, u64, [u8; 44], usize)> {
     let mut inverse = [0u8; 44];
     let (kind, path) = match intent {
@@ -570,7 +721,9 @@ fn prepare_guardian_snapshot(
             durable[2..2 + path.len()].copy_from_slice(path.as_bytes());
             durable[2 + path.len()..2 + path.len() + len].copy_from_slice(&snapshot[..len]);
             let ata = crate::ata::persist(fs).is_ok();
-            let virtio = crate::virtio_block::write_undo(&durable[..2 + path.len() + len]);
+            let payload = &durable[..2 + path.len() + len];
+            let virtio = crate::virtio_block::write_undo(payload);
+            let _ = crate::virtio_block::write_snapshot(action_id, payload);
             if !ata && !virtio {
                 return None;
             }
@@ -582,7 +735,9 @@ fn prepare_guardian_snapshot(
             durable[1] = path.len() as u8;
             durable[2..2 + path.len()].copy_from_slice(path.as_bytes());
             let ata = crate::ata::persist(fs).is_ok();
-            let virtio = crate::virtio_block::write_undo(&durable[..2 + path.len()]);
+            let payload = &durable[..2 + path.len()];
+            let virtio = crate::virtio_block::write_undo(payload);
+            let _ = crate::virtio_block::write_snapshot(action_id, payload);
             if !ata && !virtio {
                 return None;
             }

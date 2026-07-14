@@ -50,6 +50,10 @@ const GUARDIAN_SECTOR: u64 = 16;
 const GUARDIAN_CAPACITY: usize = 3072;
 const UNDO_SECTOR: u64 = 32;
 const UNDO_CAPACITY: usize = 1536;
+const SNAPSHOT_SECTOR: u64 = 64;
+const SNAPSHOT_SLOTS: u64 = 8;
+const SNAPSHOT_STRIDE: u64 = 4;
+const SNAPSHOT_CAPACITY: usize = 1540;
 
 pub fn initialize(boot_info: &BootInfo) {
     let Some(device) = crate::pci::find_vendor(VIRTIO_VENDOR, &BLOCK_DEVICES) else {
@@ -138,6 +142,20 @@ pub fn write_guardian(payload: &[u8]) -> bool {
 pub fn write_undo(payload: &[u8]) -> bool {
     write_blob(UNDO_SECTOR, b"NVU1", UNDO_CAPACITY, payload)
 }
+pub fn write_snapshot(action_id: u32, payload: &[u8]) -> bool {
+    if payload.len() + 4 > SNAPSHOT_CAPACITY {
+        return false;
+    }
+    let mut envelope = [0u8; SNAPSHOT_CAPACITY];
+    envelope[..4].copy_from_slice(&action_id.to_le_bytes());
+    envelope[4..4 + payload.len()].copy_from_slice(payload);
+    write_blob(
+        snapshot_sector(action_id),
+        b"NVS1",
+        SNAPSHOT_CAPACITY,
+        &envelope[..4 + payload.len()],
+    )
+}
 fn write_blob(start_sector: u64, magic: &[u8; 4], capacity: usize, payload: &[u8]) -> bool {
     if payload.len() > capacity {
         return false;
@@ -176,6 +194,28 @@ pub fn read_guardian(output: &mut [u8]) -> Option<usize> {
 }
 pub fn read_undo(output: &mut [u8]) -> Option<usize> {
     read_blob(UNDO_SECTOR, b"NVU1", UNDO_CAPACITY, output)
+}
+pub fn read_snapshot(action_id: u32, output: &mut [u8]) -> Option<usize> {
+    let mut envelope = [0u8; SNAPSHOT_CAPACITY];
+    let len = read_blob(
+        snapshot_sector(action_id),
+        b"NVS1",
+        SNAPSHOT_CAPACITY,
+        &mut envelope,
+    )?;
+    if len < 4 || u32::from_le_bytes(envelope[..4].try_into().ok()?) != action_id {
+        return None;
+    }
+    let payload_len = len - 4;
+    if payload_len > output.len() {
+        return None;
+    }
+    output[..payload_len].copy_from_slice(&envelope[4..len]);
+    Some(payload_len)
+}
+
+const fn snapshot_sector(action_id: u32) -> u64 {
+    SNAPSHOT_SECTOR + (action_id.saturating_sub(1) as u64 % SNAPSHOT_SLOTS) * SNAPSHOT_STRIDE
 }
 fn read_blob(
     start_sector: u64,

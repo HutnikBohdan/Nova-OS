@@ -4,12 +4,14 @@
 pub enum Intent<'a> {
     Help,
     Status,
+    History,
     List,
     Read { path: &'a str },
     Write { path: &'a str, text: &'a str },
     Append { path: &'a str, text: &'a str },
     Delete { path: &'a str },
     BuildRun { path: &'a str },
+    Rollback { action_id: u32 },
     Run { program: &'a str, args: &'a str },
     Ask { prompt: &'a str },
     Unknown { input: &'a str },
@@ -23,6 +25,9 @@ pub fn parse(input: &str) -> Intent<'_> {
     if input == "status" || input == "стан" {
         return Intent::Status;
     }
+    if input == "history" || input == "історія" {
+        return Intent::History;
+    }
     if input == "ls" || input == "dir" || input == "файли" {
         return Intent::List;
     }
@@ -31,6 +36,11 @@ pub fn parse(input: &str) -> Intent<'_> {
         "cat" | "read" | "прочитай" => Intent::Read { path: rest.trim() },
         "rm" | "delete" | "видали" => Intent::Delete { path: rest.trim() },
         "build" | "збери" | "скомпілюй" => Intent::BuildRun { path: rest.trim() },
+        "rollback" | "відкотити" => rest
+            .trim()
+            .parse::<u32>()
+            .map(|action_id| Intent::Rollback { action_id })
+            .unwrap_or(Intent::Unknown { input }),
         "run" | "запусти" => {
             let (program, args) = split_once_space(rest.trim());
             Intent::Run {
@@ -107,5 +117,12 @@ mod tests {
                 path: "/проекти/привіт.nv"
             }
         );
+    }
+
+    #[test]
+    fn parses_guardian_history_and_rollback() {
+        assert_eq!(parse("історія"), Intent::History);
+        assert_eq!(parse("відкотити 17"), Intent::Rollback { action_id: 17 });
+        assert!(matches!(parse("відкотити abc"), Intent::Unknown { .. }));
     }
 }

@@ -19,6 +19,7 @@ pub enum ActionKind {
     Setting = 6,
     Package = 7,
     SystemUpdate = 8,
+    Rollback = 9,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -91,6 +92,15 @@ impl<const N: usize> Journal<N> {
     }
     pub fn records(&self) -> &[Record] {
         &self.records[..self.len]
+    }
+    pub const fn next_action_id(&self) -> u32 {
+        self.next_action
+    }
+    pub fn latest_record(&self, action: u32) -> Option<&Record> {
+        self.records()
+            .iter()
+            .rev()
+            .find(|record| record.action_id == action)
     }
     pub fn plan(
         &mut self,
@@ -324,6 +334,7 @@ fn kind(v: u8) -> Result<ActionKind> {
         6 => Ok(ActionKind::Setting),
         7 => Ok(ActionKind::Package),
         8 => Ok(ActionKind::SystemUpdate),
+        9 => Ok(ActionKind::Rollback),
         _ => Err(Error::CorruptJournal),
     }
 }

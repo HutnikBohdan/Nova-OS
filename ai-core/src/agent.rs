@@ -14,13 +14,14 @@ pub enum Tool {
     InstallPackage = 5,
     SystemControl = 6,
     BuildProject = 7,
+    Rollback = 8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ToolSet(u64);
 impl ToolSet {
     pub const NONE: Self = Self(0);
-    pub const ALL: Self = Self((1 << 8) - 1);
+    pub const ALL: Self = Self((1 << 9) - 1);
     pub const fn one(tool: Tool) -> Self {
         Self(1u64 << tool as u8)
     }
