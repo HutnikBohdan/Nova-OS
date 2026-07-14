@@ -85,3 +85,12 @@ treated as proof that a hardware path is already integrated.
 See [docs/RESEARCH.md](docs/RESEARCH.md), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
 [docs/SELF_HOSTING.md](docs/SELF_HOSTING.md), [docs/BROWSER.md](docs/BROWSER.md), and
 [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## GitHub source and development builds
+
+Nova OS source is synchronized to the private
+[HutnikBohdan/Nova-OS](https://github.com/HutnikBohdan/Nova-OS) repository after
+each verified change block. Generated build caches and downloaded QEMU/GitHub
+tools are deliberately excluded; verified OS images and Nova VM Lab builds are
+published as GitHub pre-release assets tied to their source commit. See
+[docs/REPOSITORY.md](docs/REPOSITORY.md) for the backup and restore policy.
