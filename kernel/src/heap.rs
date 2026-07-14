@@ -135,7 +135,13 @@ unsafe impl GlobalAlloc for NovaAllocator {
                 self.release();
                 return ptr::null_mut();
             };
-            let consumed = end - (base + current);
+            // A remainder becomes a typed FreeNode, so its address must remain
+            // aligned even when the caller requests an odd number of bytes.
+            let Some(split_end) = Self::align_up(end, mem::align_of::<FreeNode>()) else {
+                self.release();
+                return ptr::null_mut();
+            };
+            let consumed = split_end - (base + current);
             if consumed <= node.size {
                 let remainder = node.size - consumed;
                 let replacement = if remainder >= mem::size_of::<FreeNode>() {

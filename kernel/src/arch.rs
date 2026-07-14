@@ -560,6 +560,7 @@ pub fn run_compiled_source(source: &str) -> Result<i32, CompiledRunError> {
 }
 
 fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
+    let frames_before = crate::memory::available();
     let Ok(mut first_space) = (unsafe { CurrentUserSpace::new(boot_info) }) else {
         return;
     };
@@ -618,21 +619,32 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
         cr3: third_space.level4_address() | flags.bits(),
         ..runtime_core::CpuContext::default()
     };
+    let first_level4 = first_space.level4_address();
+    let first_owner = first_space.into_owner();
+    let second_owner = second_space.into_owner();
+    let third_owner = third_space.into_owner();
 
-    crate::scheduler::reset(true);
+    if !crate::scheduler::reset(true) {
+        crate::serial::write_str("NOVA_PREEMPTIVE_CR3_SWITCH_FAILED\n");
+        return;
+    }
     if !crate::scheduler::install(
         runtime_core::ProcessId(1),
         runtime_core::ThreadId(1),
         first_context,
+        first_owner,
     ) || !crate::scheduler::install(
         runtime_core::ProcessId(2),
         runtime_core::ThreadId(2),
         second_context,
+        second_owner,
     ) || !crate::scheduler::install(
         runtime_core::ProcessId(3),
         runtime_core::ThreadId(3),
         third_context,
+        third_owner,
     ) {
+        let _ = crate::scheduler::reclaim_all();
         crate::serial::write_str("NOVA_PREEMPTIVE_CR3_SWITCH_FAILED\n");
         return;
     }
@@ -649,7 +661,7 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
         }
         x86_64::registers::control::Cr3::write(
             x86_64::structures::paging::PhysFrame::containing_address(x86_64::PhysAddr::new(
-                first_space.level4_address(),
+                first_level4,
             )),
             flags,
         );
@@ -664,8 +676,26 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
     let second_value = unsafe { ptr::read_volatile((offset + second_counter) as *const u64) };
     let third_value = unsafe { ptr::read_volatile((offset + third_counter) as *const u64) };
     let scheduler_passed = crate::scheduler::proof_passed();
+    let exited_frames_reclaimed = crate::scheduler::reclaimed_frames() > 0;
+    let expected_reuse = crate::scheduler::retired_level4();
     crate::scheduler::stop();
-    if first_value > 0 && second_value > 0 && third_value > 0 && scheduler_passed {
+    let frame_reused = if let Ok(reuse_space) = unsafe { CurrentUserSpace::new(boot_info) } {
+        reuse_space.level4_address() == expected_reuse
+    } else {
+        false
+    };
+    let _ = crate::scheduler::reclaim_all();
+    let all_frames_reclaimed = crate::memory::available() == frames_before;
+    if first_value > 0
+        && second_value > 0
+        && third_value > 0
+        && scheduler_passed
+        && exited_frames_reclaimed
+        && frame_reused
+        && all_frames_reclaimed
+    {
+        crate::serial::write_str("NOVA_PROCESS_EXIT_FRAMES_RECLAIMED_OK\n");
+        crate::serial::write_str("NOVA_ADDRESS_SPACE_FRAME_REUSE_OK\n");
         crate::serial::write_str("NOVA_SCHEDULER_3_PROCESS_OK\n");
         crate::serial::write_str("NOVA_SCHEDULER_EXIT_HANDOFF_OK\n");
         crate::serial::write_str("NOVA_FULL_CONTEXT_SWITCH_OK\n");

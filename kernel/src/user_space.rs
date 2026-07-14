@@ -1,12 +1,13 @@
 use crate::{
-    memory::GlobalFrames,
+    memory::{self, GlobalFrames},
     process::{PageRole, UserAddressSpace},
 };
 use bootloader_api::BootInfo;
 use core::{
-    ptr,
+    mem, ptr,
     sync::atomic::{AtomicU64, Ordering},
 };
+use memory_core::{FrameLedger, PhysicalFrame};
 use x86_64::{
     PhysAddr, VirtAddr,
     registers::control::Cr3,
@@ -25,12 +26,66 @@ pub enum UserSpaceError {
 }
 
 static KERNEL_CR3: AtomicU64 = AtomicU64::new(0);
+pub const MAX_USER_SPACE_FRAMES: usize = 32;
+
+struct TrackingFrames {
+    global: GlobalFrames,
+    owned: FrameLedger<MAX_USER_SPACE_FRAMES>,
+}
+
+impl TrackingFrames {
+    const fn new() -> Self {
+        Self {
+            global: GlobalFrames,
+            owned: FrameLedger::new(),
+        }
+    }
+}
+
+unsafe impl FrameAllocator<Size4KiB> for TrackingFrames {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        let frame = self.global.allocate_frame()?;
+        if self
+            .owned
+            .record(PhysicalFrame(frame.start_address().as_u64()))
+            .is_err()
+        {
+            let _ = memory::release(frame);
+            return None;
+        }
+        Some(frame)
+    }
+}
+
+pub struct AddressSpaceOwner {
+    level4_address: u64,
+    frames: FrameLedger<MAX_USER_SPACE_FRAMES>,
+}
+
+impl AddressSpaceOwner {
+    pub const fn level4_address(&self) -> u64 {
+        self.level4_address
+    }
+
+    pub fn reclaim(mut self) -> usize {
+        let mut reclaimed = 0;
+        while let Some(frame) = self.frames.take_last() {
+            let Ok(frame) = PhysFrame::from_start_address(PhysAddr::new(frame.0)) else {
+                continue;
+            };
+            if memory::release(frame) {
+                reclaimed += 1;
+            }
+        }
+        reclaimed
+    }
+}
 
 /// A process-owned level-4 table. Kernel mappings remain supervisor-only,
 /// while PML4 slot zero is rebuilt exclusively from USER mappings.
 pub struct CurrentUserSpace {
     mapper: OffsetPageTable<'static>,
-    frames: GlobalFrames,
+    frames: TrackingFrames,
     level4_frame: PhysFrame<Size4KiB>,
     physical_offset: VirtAddr,
 }
@@ -45,7 +100,7 @@ impl CurrentUserSpace {
         let (kernel_level4, _) = Cr3::read();
         let kernel_table_address = VirtAddr::new(offset + kernel_level4.start_address().as_u64());
         let kernel_table = unsafe { &*kernel_table_address.as_ptr::<PageTable>() };
-        let mut frames = GlobalFrames;
+        let mut frames = TrackingFrames::new();
         if crate::memory::available() < 16 {
             return Err(UserSpaceError::NoFrames);
         }
@@ -72,6 +127,25 @@ impl CurrentUserSpace {
         self.mapper
             .translate_addr(VirtAddr::new(virtual_address))
             .map(|address| address.as_u64())
+    }
+
+    pub fn into_owner(mut self) -> AddressSpaceOwner {
+        let frames = mem::take(&mut self.frames.owned);
+        AddressSpaceOwner {
+            level4_address: self.level4_address(),
+            frames,
+        }
+    }
+}
+
+impl Drop for CurrentUserSpace {
+    fn drop(&mut self) {
+        let frames = mem::take(&mut self.frames.owned);
+        let owner = AddressSpaceOwner {
+            level4_address: self.level4_address(),
+            frames,
+        };
+        let _ = owner.reclaim();
     }
 }
 

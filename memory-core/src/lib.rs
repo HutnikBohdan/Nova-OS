@@ -7,6 +7,60 @@ pub const MAX_REGIONS: usize = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalFrame(pub u64);
 
+/// Fixed-capacity ownership record for frames allocated to one kernel object.
+/// Entries are unique and can be transferred without allocation.
+pub struct FrameLedger<const N: usize> {
+    frames: [Option<PhysicalFrame>; N],
+    len: usize,
+}
+
+impl<const N: usize> FrameLedger<N> {
+    pub const fn new() -> Self {
+        Self {
+            frames: [None; N],
+            len: 0,
+        }
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn contains(&self, frame: PhysicalFrame) -> bool {
+        self.frames[..self.len].contains(&Some(frame))
+    }
+
+    pub fn record(&mut self, frame: PhysicalFrame) -> Result<(), MemoryError> {
+        if self.contains(frame) {
+            return Err(MemoryError::InvalidFrame);
+        }
+        if self.len == N {
+            return Err(MemoryError::TableFull);
+        }
+        self.frames[self.len] = Some(frame);
+        self.len += 1;
+        Ok(())
+    }
+
+    pub fn take_last(&mut self) -> Option<PhysicalFrame> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        self.frames[self.len].take()
+    }
+}
+
+impl<const N: usize> Default for FrameLedger<N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
     Exhausted,
@@ -193,8 +247,26 @@ mod tests {
         let second = allocator.allocate().unwrap();
         assert_eq!(allocator.allocate(), Err(MemoryError::Exhausted));
         allocator.free(first).unwrap();
+        assert_eq!(allocator.free(first), Err(MemoryError::InvalidFrame));
         assert_eq!(allocator.allocate().unwrap(), first);
         assert_ne!(first, second);
+    }
+    #[test]
+    fn frame_ledger_is_unique_bounded_and_drains_once() {
+        let mut ledger = FrameLedger::<2>::new();
+        let first = PhysicalFrame(0x1000);
+        let second = PhysicalFrame(0x2000);
+        ledger.record(first).unwrap();
+        assert_eq!(ledger.record(first), Err(MemoryError::InvalidFrame));
+        ledger.record(second).unwrap();
+        assert_eq!(
+            ledger.record(PhysicalFrame(0x3000)),
+            Err(MemoryError::TableFull)
+        );
+        assert_eq!(ledger.take_last(), Some(second));
+        assert_eq!(ledger.take_last(), Some(first));
+        assert_eq!(ledger.take_last(), None);
+        assert!(ledger.is_empty());
     }
     #[test]
     fn address_space_enforces_write_and_user_permissions() {
