@@ -22,7 +22,7 @@ jobs:
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install nightly-2026-04-20 --profile minimal \
-            --component rust-src --component llvm-tools \
+            --component rust-src --component llvm-tools --component rustfmt \
             --target x86_64-unknown-none --target x86_64-unknown-uefi
 
       - name: Verify vendored metadata
