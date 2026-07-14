@@ -14,6 +14,8 @@ pub enum Firmware {
 #[serde(default)]
 pub struct VmConfig {
     pub name: String,
+    /// Optional bundle root. When empty, resources are resolved next to the executable.
+    pub resource_root: String,
     pub media_path: String,
     pub disk_path: String,
     pub memory_mb: u32,
@@ -29,6 +31,7 @@ impl Default for VmConfig {
     fn default() -> Self {
         Self {
             name: "Test OS".into(),
+            resource_root: String::new(),
             media_path: String::new(),
             disk_path: String::new(),
             memory_mb: 2048,

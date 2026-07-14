@@ -17,10 +17,27 @@ cargo run -p nova-vm-lab
 cargo build --release -p nova-vm-lab
 ```
 
-The ready-to-run copy is `dist/Nova-VM-Lab.exe`; the Cargo build output is
-`target/release/nova-vm-lab.exe`. VM profiles, disks,
-firmware state and logs are stored in `%LOCALAPPDATA%/NovaVmLab` so QEMU never
-needs to open a mutable virtual disk through the Cyrillic OneDrive path.
+The Cargo build output is `target/release/nova-vm-lab.exe`. A single EXE is not
+the distributable product because QEMU, firmware and Nova images are runtime
+resources. Assemble the release directory using this deterministic layout:
+
+```text
+Nova-VM-Lab.exe
+SHA256SUMS.txt
+qemu/qemu-system-x86_64.exe
+qemu/qemu-img.exe
+qemu/share/...
+images/nova-os-bios.img
+images/nova-os-uefi.img
+```
+
+Resources are resolved relative to `Nova-VM-Lab.exe`, so the whole directory
+can be moved to another machine. An explicit resource root can be selected in
+the UI or set with `NOVA_VM_LAB_HOME`; the UI setting has priority. The package
+publisher must include a sorted SHA-256 manifest for all bundle files. The UI
+provides a Rust-native bundle check for QEMU, firmware and both Nova images. VM
+profiles, disks, writable firmware state and logs are stored in
+`%LOCALAPPDATA%/NovaVmLab` so the installed bundle remains immutable.
 
 To install a conventional OS: select its ISO, create a QCOW2 disk, keep
 "boot from installation media" enabled and start. After the installer finishes,

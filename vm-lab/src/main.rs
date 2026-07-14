@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod resources;
 mod vm;
 
 use config::{Firmware, VmConfig};
 use eframe::egui;
+use resources::ResourceLayout;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -30,7 +32,6 @@ struct VmLab {
     config: VmConfig,
     runtime: VmRuntime,
     root: PathBuf,
-    project_root: PathBuf,
     status: String,
     log_view: String,
     show_serial: bool,
@@ -41,10 +42,6 @@ impl VmLab {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         let root = config::data_root();
         let _ = fs::create_dir_all(root.join("disks"));
-        let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("VM Lab must be inside the workspace")
-            .to_path_buf();
         let mut config = config::load(&root.join("profile.json"));
         if config.disk_path.is_empty() {
             config.disk_path = root.join("disks/test-os.qcow2").display().to_string();
@@ -53,28 +50,22 @@ impl VmLab {
             config,
             runtime: VmRuntime::new(&root.join("logs")),
             root,
-            project_root,
             status: "Готово. Виберіть ISO або відкрийте профіль Nova OS.".into(),
             log_view: String::new(),
             show_serial: true,
         }
     }
 
-    fn qemu(&self) -> PathBuf {
-        self.project_root.join("tools/qemu/qemu-system-x86_64.exe")
-    }
-
-    fn qemu_img(&self) -> PathBuf {
-        self.project_root.join("tools/qemu/qemu-img.exe")
+    fn resources(&self) -> Result<ResourceLayout, String> {
+        ResourceLayout::discover(&self.config.resource_root)
     }
 
     fn nova_profile(&mut self) {
         self.config.name = "Nova OS Debug".into();
         self.config.media_path = self
-            .project_root
-            .join("dist/nova-os-bios.img")
-            .display()
-            .to_string();
+            .resources()
+            .map(|resources| resources.bios_image().display().to_string())
+            .unwrap_or_default();
         self.config.disk_path.clear();
         self.config.memory_mb = 512;
         self.config.cpu_count = 1;
@@ -86,11 +77,14 @@ impl VmLab {
     }
 
     fn create_disk(&mut self) {
-        match vm::create_disk(
-            &self.qemu_img(),
-            Path::new(&self.config.disk_path),
-            self.config.disk_size_gb,
-        ) {
+        let result = self.resources().and_then(|resources| {
+            vm::create_disk(
+                &resources.qemu_img(),
+                Path::new(&self.config.disk_path),
+                self.config.disk_size_gb,
+            )
+        });
+        match result {
             Ok(message) if message.is_empty() => self.status = "QCOW2-диск створено.".into(),
             Ok(message) => self.status = message,
             Err(error) => self.status = format!("Помилка диска: {error}"),
@@ -134,7 +128,7 @@ impl VmLab {
     }
 
     fn stage_firmware(&self) -> Result<(PathBuf, Option<PathBuf>, Option<PathBuf>), String> {
-        let source = self.project_root.join("tools/qemu/share");
+        let source = self.resources()?.qemu_share();
         let share = self.root.join("qemu-share");
         fs::create_dir_all(&share).map_err(|e| e.to_string())?;
         for entry in fs::read_dir(&source).map_err(|e| e.to_string())? {
@@ -161,8 +155,12 @@ impl VmLab {
 
     fn start(&mut self) {
         let result = (|| {
-            if !self.qemu().exists() {
-                return Err("QEMU не знайдено в tools/qemu.".into());
+            let qemu = self.resources()?.qemu();
+            if !qemu.exists() {
+                return Err(format!(
+                    "QEMU не знайдено в переносному bundle: {}",
+                    qemu.display()
+                ));
             }
             let media = self.stage_media()?;
             let disk = self.mutable_disk()?;
@@ -176,7 +174,7 @@ impl VmLab {
                 firmware_share: &share,
                 serial_log: &serial_log,
             };
-            vm::launch(&self.qemu(), &self.config, &files, &mut self.runtime)
+            vm::launch(&qemu, &self.config, &files, &mut self.runtime)
         })();
         self.status = match result {
             Ok(()) => "VM запущена. Вікно емулятора відкрито окремо.".into(),
@@ -218,6 +216,33 @@ impl VmLab {
         ui.heading("Віртуальний комп'ютер");
         ui.label("Назва");
         ui.text_edit_singleline(&mut self.config.name);
+        ui.label("Каталог ресурсів (порожньо = каталог Nova-VM-Lab.exe)");
+        ui.horizontal(|ui| {
+            ui.text_edit_singleline(&mut self.config.resource_root);
+            if ui.button("…").clicked()
+                && let Some(path) = rfd::FileDialog::new().pick_folder()
+            {
+                self.config.resource_root = path.display().to_string();
+            }
+            if ui.button("Перевірити bundle").clicked() {
+                self.status = match self.resources() {
+                    Ok(resources) => {
+                        let missing = resources.missing_bundle_files();
+                        if missing.is_empty() {
+                            format!("Bundle готовий: {}", resources.root.display())
+                        } else {
+                            let files = missing
+                                .iter()
+                                .map(|path| path.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            format!("Bundle неповний. Відсутні: {files}")
+                        }
+                    }
+                    Err(error) => error,
+                };
+            }
+        });
         ui.add_space(8.0);
         ui.label("ISO або завантажувальний IMG");
         ui.horizontal(|ui| {

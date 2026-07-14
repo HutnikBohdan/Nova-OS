@@ -2,6 +2,8 @@
 name = "nova-vm-lab"
 version = "0.1.0"
 edition = "2024"
+description = "Portable Nova OS virtual-machine launcher and diagnostics lab"
+authors = ["Nova OS"]
 
 [dependencies]
 eframe = { version = "0.35.0", default-features = false, features = ["default_fonts", "glow", "persistence"] }
@@ -11,4 +13,3 @@ serde_json = "1.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Threading"] }
-

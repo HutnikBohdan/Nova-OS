@@ -38,7 +38,9 @@ Disk images are copied to `dist/nova-os-uefi.img` and
 ## Nova VM Lab
 
 `Nova VM Lab` is the native Rust desktop emulator front-end included with this
-workspace. Launch `dist/Nova-VM-Lab.exe`, then either:
+workspace. Build the validated portable directory with
+the layout documented in `vm-lab/README.md`, launch
+`dist/Nova-VM-Lab/Nova-VM-Lab.exe`, then either:
 
 - press **Nova OS profile** to boot the current Nova image for debugging; or
 - select an ISO, create a QCOW2 system disk, and press **Start / install**.
@@ -94,3 +96,6 @@ each verified change block. Generated build caches and downloaded QEMU/GitHub
 tools are deliberately excluded; verified OS images and Nova VM Lab builds are
 published as GitHub pre-release assets tied to their source commit. See
 [docs/REPOSITORY.md](docs/REPOSITORY.md) for the backup and restore policy.
+Commercial-readiness gates are tracked in the linked
+[Nova OS GitHub Project](https://github.com/users/HutnikBohdan/projects/2/views/1);
+an item is not complete until its repository acceptance evidence passes.
