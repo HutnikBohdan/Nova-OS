@@ -1,0 +1,51 @@
+name: Nova source gates
+
+on:
+  push:
+    branches: [master, "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-build:
+    name: Vendored offline build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_NET_OFFLINE: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install nightly-2026-04-20 --profile minimal \
+            --component rust-src --component llvm-tools \
+            --target x86_64-unknown-none --target x86_64-unknown-uefi
+
+      - name: Verify vendored metadata
+        run: cargo metadata --locked --offline --no-deps --format-version 1 > /dev/null
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run kernel-model tests
+        run: cargo test -p memory-core -p runtime-core --locked --offline
+
+      - name: Enforce microkernel dependency boundary
+        shell: bash
+        run: |
+          tree="$(cargo tree -p kernel -e normal --depth 1 --no-default-features --locked --offline)"
+          printf '%s\n' "$tree"
+          if printf '%s\n' "$tree" | grep -E '(ai-core|agent-core|browser-core|desktop-core|compiler-core|fontdue|driver-core|net-core|storage-core)'; then
+            echo "User-space or driver dependency leaked into the default kernel" >&2
+            exit 1
+          fi
+
+      - name: Build default microkernel images offline
+        run: cargo build -p nova-os --release --locked --offline
+
+      - name: Build legacy proof images offline
+        run: cargo build -p nova-os --release --locked --offline --features legacy-monolith-proofs
