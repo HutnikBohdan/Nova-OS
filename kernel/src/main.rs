@@ -26,6 +26,7 @@ mod scheduler;
 mod serial;
 #[cfg(feature = "legacy-monolith-proofs")]
 mod services;
+mod user_copy;
 mod user_space;
 #[cfg(feature = "legacy-monolith-proofs")]
 mod virtio_block;

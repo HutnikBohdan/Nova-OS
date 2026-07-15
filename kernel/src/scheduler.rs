@@ -1,5 +1,5 @@
 use core::{cell::UnsafeCell, ptr};
-use runtime_core::{CpuContext, ProcessId, SchedulerCore, ThreadId};
+use runtime_core::{CpuContext, FxSaveArea, ProcessId, SchedulerCore, ThreadId};
 use x86_64::registers::control::Cr3;
 
 use crate::user_space::AddressSpaceOwner;
@@ -12,6 +12,7 @@ struct ScheduledTask {
     process: ProcessId,
     thread: ThreadId,
     context: CpuContext,
+    extended_state: FxSaveArea,
     alive: bool,
     address_space: Option<AddressSpaceOwner>,
 }
@@ -83,6 +84,7 @@ impl KernelScheduler {
             process,
             thread,
             context,
+            extended_state: FxSaveArea::clean(),
             alive: true,
             address_space: Some(address_space),
         });
@@ -108,6 +110,16 @@ impl KernelScheduler {
         self.task_mut(thread)
             .filter(|task| task.alive)
             .map(|task| ptr::addr_of_mut!(task.context))
+            .unwrap_or(ptr::null_mut())
+    }
+
+    fn current_extended_state_ptr(&mut self) -> *mut u8 {
+        let Some(thread) = self.dispatch.current() else {
+            return ptr::null_mut();
+        };
+        self.task_mut(thread)
+            .filter(|task| task.alive)
+            .map(|task| task.extended_state.as_mut_ptr())
             .unwrap_or(ptr::null_mut())
     }
 
@@ -260,6 +272,7 @@ static SCHEDULER: SchedulerCell = SchedulerCell(UnsafeCell::new(KernelScheduler:
 unsafe extern "C" {
     static mut nova_scheduler_active: u8;
     static mut nova_scheduler_current_context: *mut CpuContext;
+    static mut nova_scheduler_current_fx: *mut u8;
 }
 
 fn scheduler() -> &'static mut KernelScheduler {
@@ -274,6 +287,10 @@ pub fn reset(proof_mode: bool) -> bool {
         ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_active), 0);
         ptr::write_volatile(
             ptr::addr_of_mut!(nova_scheduler_current_context),
+            ptr::null_mut(),
+        );
+        ptr::write_volatile(
+            ptr::addr_of_mut!(nova_scheduler_current_fx),
             ptr::null_mut(),
         );
     }
@@ -291,8 +308,10 @@ pub fn install(
 
 pub fn start() -> *mut CpuContext {
     let context = scheduler().start();
+    let extended = scheduler().current_extended_state_ptr();
     unsafe {
         ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_current_context), context);
+        ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_current_fx), extended);
         ptr::write_volatile(
             ptr::addr_of_mut!(nova_scheduler_active),
             (!context.is_null()) as u8,
@@ -306,6 +325,10 @@ pub fn stop() {
         ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_active), 0);
         ptr::write_volatile(
             ptr::addr_of_mut!(nova_scheduler_current_context),
+            ptr::null_mut(),
+        );
+        ptr::write_volatile(
+            ptr::addr_of_mut!(nova_scheduler_current_fx),
             ptr::null_mut(),
         );
     }
@@ -329,8 +352,10 @@ pub fn reclaim_all() -> usize {
 
 pub fn exit_current() -> *mut CpuContext {
     let context = scheduler().exit_from_ring3();
+    let extended = scheduler().current_extended_state_ptr();
     unsafe {
         ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_current_context), context);
+        ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_current_fx), extended);
         if context.is_null() {
             ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_active), 0);
         }
@@ -341,8 +366,10 @@ pub fn exit_current() -> *mut CpuContext {
 #[unsafe(no_mangle)]
 extern "C" fn nova_scheduler_on_timer() -> *mut CpuContext {
     let context = scheduler().on_tick();
+    let extended = scheduler().current_extended_state_ptr();
     unsafe {
         ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_current_context), context);
+        ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_current_fx), extended);
         if context.is_null() {
             ptr::write_volatile(ptr::addr_of_mut!(nova_scheduler_active), 0);
         }
