@@ -26,6 +26,7 @@ pub enum UserSpaceError {
 }
 
 static KERNEL_CR3: AtomicU64 = AtomicU64::new(0);
+static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(u64::MAX);
 pub const MAX_USER_SPACE_FRAMES: usize = 32;
 
 struct TrackingFrames {
@@ -97,6 +98,7 @@ impl CurrentUserSpace {
             .physical_memory_offset
             .into_option()
             .ok_or(UserSpaceError::NoPhysicalMap)?;
+        PHYSICAL_MEMORY_OFFSET.store(offset, Ordering::Release);
         let (kernel_level4, _) = Cr3::read();
         let kernel_table_address = VirtAddr::new(offset + kernel_level4.start_address().as_u64());
         let kernel_table = unsafe { &*kernel_table_address.as_ptr::<PageTable>() };
@@ -216,6 +218,11 @@ unsafe impl UserAddressSpace for CurrentUserSpace {
         }
         Ok(())
     }
+}
+
+pub fn physical_memory_offset() -> Option<u64> {
+    let offset = PHYSICAL_MEMORY_OFFSET.load(Ordering::Acquire);
+    (offset != u64::MAX).then_some(offset)
 }
 
 pub fn restore_kernel_address_space() -> bool {

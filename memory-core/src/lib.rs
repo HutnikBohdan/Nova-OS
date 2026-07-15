@@ -1,6 +1,7 @@
 #![no_std]
 
 pub const PAGE_SIZE: u64 = 4096;
+pub const USER_ADDRESS_MAX: u64 = 0x0000_7fff_ffff_ffff;
 pub const MAX_FRAMES: usize = 32_768;
 pub const MAX_REGIONS: usize = 64;
 
@@ -69,6 +70,70 @@ pub enum MemoryError {
     Overlap,
     TableFull,
     PermissionDenied,
+}
+
+/// A non-empty canonical low-half user range with an exclusive end address.
+///
+/// Kernel architecture code uses this model before walking the active page
+/// tables. Keeping the overflow and boundary rules here makes them testable on
+/// the host without weakening the hardware page-table checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UserBufferRange {
+    start: u64,
+    end: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserMemoryAccess {
+    Read,
+    Write,
+}
+
+/// Models the effective permission required at every x86-64 page-table level.
+pub fn validate_user_page_permissions(
+    present: bool,
+    user_accessible: bool,
+    writable: bool,
+    access: UserMemoryAccess,
+) -> Result<(), MemoryError> {
+    if !present {
+        return Err(MemoryError::InvalidRange);
+    }
+    if !user_accessible || matches!(access, UserMemoryAccess::Write) && !writable {
+        return Err(MemoryError::PermissionDenied);
+    }
+    Ok(())
+}
+
+impl UserBufferRange {
+    pub fn new(start: u64, length: usize) -> Result<Self, MemoryError> {
+        if length == 0 || start > USER_ADDRESS_MAX {
+            return Err(MemoryError::InvalidRange);
+        }
+        let end = start
+            .checked_add(length as u64)
+            .ok_or(MemoryError::InvalidRange)?;
+        if end == 0 || end - 1 > USER_ADDRESS_MAX {
+            return Err(MemoryError::InvalidRange);
+        }
+        Ok(Self { start, end })
+    }
+
+    pub const fn start(self) -> u64 {
+        self.start
+    }
+
+    pub const fn end(self) -> u64 {
+        self.end
+    }
+
+    pub const fn first_page(self) -> u64 {
+        self.start & !(PAGE_SIZE - 1)
+    }
+
+    pub const fn last_page(self) -> u64 {
+        (self.end - 1) & !(PAGE_SIZE - 1)
+    }
 }
 
 pub struct FrameAllocator {
@@ -240,6 +305,55 @@ impl<const N: usize> Default for AddressSpace<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn user_buffer_range_rejects_empty_overflow_and_kernel_addresses() {
+        assert_eq!(
+            UserBufferRange::new(0x1000, 0),
+            Err(MemoryError::InvalidRange)
+        );
+        assert_eq!(
+            UserBufferRange::new(u64::MAX - 1, 4),
+            Err(MemoryError::InvalidRange)
+        );
+        assert_eq!(
+            UserBufferRange::new(USER_ADDRESS_MAX + 1, 1),
+            Err(MemoryError::InvalidRange)
+        );
+        assert_eq!(
+            UserBufferRange::new(USER_ADDRESS_MAX, 2),
+            Err(MemoryError::InvalidRange)
+        );
+    }
+
+    #[test]
+    fn user_buffer_range_identifies_every_touched_page() {
+        let range = UserBufferRange::new(0x1fff, PAGE_SIZE as usize + 2).unwrap();
+        assert_eq!(range.start(), 0x1fff);
+        assert_eq!(range.end(), 0x3001);
+        assert_eq!(range.first_page(), 0x1000);
+        assert_eq!(range.last_page(), 0x3000);
+
+        let top = UserBufferRange::new(USER_ADDRESS_MAX, 1).unwrap();
+        assert_eq!(top.last_page(), USER_ADDRESS_MAX & !(PAGE_SIZE - 1));
+    }
+
+    #[test]
+    fn user_page_permissions_fail_closed_for_each_required_bit() {
+        assert_eq!(
+            validate_user_page_permissions(false, true, true, UserMemoryAccess::Read),
+            Err(MemoryError::InvalidRange)
+        );
+        assert_eq!(
+            validate_user_page_permissions(true, false, true, UserMemoryAccess::Read),
+            Err(MemoryError::PermissionDenied)
+        );
+        assert_eq!(
+            validate_user_page_permissions(true, true, false, UserMemoryAccess::Write),
+            Err(MemoryError::PermissionDenied)
+        );
+        assert!(validate_user_page_permissions(true, true, false, UserMemoryAccess::Read).is_ok());
+        assert!(validate_user_page_permissions(true, true, true, UserMemoryAccess::Write).is_ok());
+    }
     #[test]
     fn frames_allocate_free_and_reuse() {
         let mut allocator = FrameAllocator::new(0x100000, PAGE_SIZE * 2).unwrap();

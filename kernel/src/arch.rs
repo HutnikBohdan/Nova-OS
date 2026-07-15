@@ -1,5 +1,6 @@
 use crate::{
     process::{self, Ring3Proof, UserAddressSpace, UserModeSelectors},
+    user_copy,
     user_space::CurrentUserSpace,
 };
 use bootloader_api::BootInfo;
@@ -62,8 +63,12 @@ nova_scheduler_irq_switch: .byte 0
 .align 8
 .global nova_scheduler_current_context
 nova_scheduler_current_context: .quad 0
+.global nova_scheduler_current_fx
+nova_scheduler_current_fx: .quad 0
 .global nova_preempt_kernel_cr3
 nova_preempt_kernel_cr3: .quad 0
+.align 16
+nova_kernel_fx_state: .zero 512
 .section .text
 .global nova_enter_ring3
 nova_enter_ring3:
@@ -83,6 +88,9 @@ nova_enter_ring3:
 
 .global nova_enter_preempt_ring3
 nova_enter_preempt_ring3:
+    fxsave64 [rip + nova_kernel_fx_state]
+    mov rax, [rip + nova_scheduler_current_fx]
+    fxrstor64 [rax]
     push rbx
     push rbp
     push r12
@@ -263,10 +271,14 @@ nova_timer_stub:
     mov [rax + 152], rdx
     mov rdx, cr3
     mov [rax + 160], rdx
+    mov rdx, [rip + nova_scheduler_current_fx]
+    fxsave64 [rdx]
     call nova_scheduler_on_timer
     test rax, rax
     jz .Lscheduler_complete
 .Lload_context:
+    mov rdx, [rip + nova_scheduler_current_fx]
+    fxrstor64 [rdx]
     mov rdx, [rax + 120]
     mov [rsp + 8], rdx
     mov rdx, [rax + 128]
@@ -301,6 +313,7 @@ nova_timer_stub:
     iretq
 .Lscheduler_complete:
     mov byte ptr [rip + nova_scheduler_active], 0
+    fxrstor64 [rip + nova_kernel_fx_state]
     mov rax, [rip + nova_preempt_kernel_cr3]
     mov cr3, rax
     mov al, 0x20
@@ -309,6 +322,7 @@ nova_timer_stub:
     jmp [rip + nova_kernel_return_rip]
 .Lscheduler_syscall_complete:
     mov byte ptr [rip + nova_scheduler_active], 0
+    fxrstor64 [rip + nova_kernel_fx_state]
     mov rax, [rip + nova_preempt_kernel_cr3]
     mov cr3, rax
     mov rsp, [rip + nova_kernel_return_rsp]
@@ -446,6 +460,7 @@ fn run_ipc_app(boot_info: &BootInfo, selectors: UserModeSelectors) {
     if unsafe { address_space.activate() }.is_err() {
         return;
     }
+    run_user_copy_gate(MESSAGE);
     unsafe {
         nova_enter_ring3(
             selectors.data() as u64,
@@ -457,6 +472,33 @@ fn run_ipc_app(boot_info: &BootInfo, selectors: UserModeSelectors) {
     crate::serial::write_str("NOVA_RING3_IPC_ROUNDTRIP_OK\n");
     #[cfg(feature = "legacy-monolith-proofs")]
     run_compiled_app(boot_info, selectors);
+}
+
+fn run_user_copy_gate(expected: &[u8]) {
+    let mut allowed = [0u8; 4];
+    let allow_ok = expected.len() == allowed.len()
+        && user_copy::copy_from_user(process::USER_EXCHANGE_BASE, &mut allowed).is_ok()
+        && allowed == expected;
+    if allow_ok {
+        crate::serial::write_str("NOVA_USER_COPY_ALLOW_OK\n");
+    } else {
+        crate::serial::write_str("NOVA_USER_COPY_ALLOW_FAILED\n");
+    }
+
+    let mut cross_page = [0u8; 2];
+    let kernel_range_denied =
+        user_copy::copy_from_user(0xffff_8000_0000_0000, &mut cross_page[..1]).is_err();
+    let read_only_denied = user_copy::copy_to_user(process::USER_CODE_BASE, b"x").is_err();
+    let unmapped_page_denied = user_copy::copy_from_user(
+        process::USER_EXCHANGE_BASE + memory_core::PAGE_SIZE - 1,
+        &mut cross_page,
+    )
+    .is_err();
+    if kernel_range_denied && read_only_denied && unmapped_page_denied {
+        crate::serial::write_str("NOVA_USER_COPY_DENY_OK\n");
+    } else {
+        crate::serial::write_str("NOVA_USER_COPY_DENY_FAILED\n");
+    }
 }
 
 #[cfg(feature = "legacy-monolith-proofs")]
@@ -502,6 +544,7 @@ fn run_compiled_app(boot_info: &BootInfo, selectors: UserModeSelectors) {
 }
 
 pub fn enable_runtime_interrupts(boot_info: &BootInfo, selectors: UserModeSelectors) {
+    unsafe { enable_fpu_sse() };
     #[cfg(feature = "legacy-monolith-proofs")]
     unsafe {
         RUNTIME_BOOT_INFO = boot_info as *const BootInfo;
@@ -596,11 +639,22 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
     let Some(third_counter) = third_space.physical_address(process::USER_EXCHANGE_BASE) else {
         return;
     };
+    let Some(first_failure) = first_space.physical_address(process::USER_EXCHANGE_BASE + 8) else {
+        return;
+    };
+    let Some(second_failure) = second_space.physical_address(process::USER_EXCHANGE_BASE + 8)
+    else {
+        return;
+    };
+    let Some(third_failure) = third_space.physical_address(process::USER_EXCHANGE_BASE + 8) else {
+        return;
+    };
     let Some(offset) = boot_info.physical_memory_offset.into_option() else {
         return;
     };
     let (kernel_cr3, flags) = x86_64::registers::control::Cr3::read();
     let first_context = runtime_core::CpuContext {
+        rbx: 0x1111_2222_3333_4444,
         instruction_pointer: first.instruction_pointer(),
         code_segment: selectors.code() as u64,
         flags: 0x202,
@@ -610,6 +664,7 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
         ..runtime_core::CpuContext::default()
     };
     let second_context = runtime_core::CpuContext {
+        rbx: 0x5555_6666_7777_8888,
         instruction_pointer: _second.instruction_pointer(),
         code_segment: selectors.code() as u64,
         flags: 0x202,
@@ -619,6 +674,7 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
         ..runtime_core::CpuContext::default()
     };
     let third_context = runtime_core::CpuContext {
+        rbx: 0x9999_aaaa_bbbb_cccc,
         instruction_pointer: third.instruction_pointer(),
         code_segment: selectors.code() as u64,
         flags: 0x202,
@@ -683,6 +739,9 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
     let first_value = unsafe { ptr::read_volatile((offset + first_counter) as *const u64) };
     let second_value = unsafe { ptr::read_volatile((offset + second_counter) as *const u64) };
     let third_value = unsafe { ptr::read_volatile((offset + third_counter) as *const u64) };
+    let first_failure = unsafe { ptr::read_volatile((offset + first_failure) as *const u64) };
+    let second_failure = unsafe { ptr::read_volatile((offset + second_failure) as *const u64) };
+    let third_failure = unsafe { ptr::read_volatile((offset + third_failure) as *const u64) };
     let scheduler_passed = crate::scheduler::proof_passed();
     let exited_frames_reclaimed = crate::scheduler::reclaimed_frames() > 0;
     let expected_reuse = crate::scheduler::retired_level4();
@@ -697,6 +756,9 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
     if first_value > 0
         && second_value > 0
         && third_value > 0
+        && first_failure == 0
+        && second_failure == 0
+        && third_failure == 0
         && scheduler_passed
         && exited_frames_reclaimed
         && frame_reused
@@ -704,12 +766,29 @@ fn run_preemption_proof(boot_info: &BootInfo, selectors: UserModeSelectors) {
     {
         crate::serial::write_str("NOVA_PROCESS_EXIT_FRAMES_RECLAIMED_OK\n");
         crate::serial::write_str("NOVA_ADDRESS_SPACE_FRAME_REUSE_OK\n");
+        crate::serial::write_str("NOVA_FPU_SSE_CONTEXT_ISOLATION_OK\n");
         crate::serial::write_str("NOVA_SCHEDULER_3_PROCESS_OK\n");
         crate::serial::write_str("NOVA_SCHEDULER_EXIT_HANDOFF_OK\n");
         crate::serial::write_str("NOVA_FULL_CONTEXT_SWITCH_OK\n");
         crate::serial::write_str("NOVA_PREEMPTIVE_CR3_SWITCH_OK\n");
     } else {
         crate::serial::write_str("NOVA_PREEMPTIVE_CR3_SWITCH_FAILED\n");
+    }
+}
+
+unsafe fn enable_fpu_sse() {
+    let mut cr0: u64;
+    let mut cr4: u64;
+    unsafe {
+        asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack));
+        cr0 |= 1 << 1; // MP
+        cr0 &= !((1 << 2) | (1 << 3)); // clear EM and TS
+        cr0 |= 1 << 5; // NE
+        asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack));
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
+        cr4 |= (1 << 9) | (1 << 10); // OSFXSR and OSXMMEXCPT
+        asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack));
+        asm!("fninit", options(nomem, nostack));
     }
 }
 
@@ -803,12 +882,15 @@ extern "C" fn nova_ring3_invalid_opcode(saved_cs: u64) -> u8 {
 
 #[unsafe(no_mangle)]
 extern "C" fn nova_ring3_object_write(address: u64, length: u64) -> u64 {
-    if length > 256 {
+    if length == 0 || length > 256 {
         return u64::MAX;
     }
-    let Some(bytes) = checked_user_buffer(address, length) else {
+    let length = length as usize;
+    let mut bounce = [0u8; 256];
+    if user_copy::copy_from_user(address, &mut bounce[..length]).is_err() {
         return u64::MAX;
-    };
+    }
+    let bytes = &bounce[..length];
     let Ok(text) = core::str::from_utf8(bytes) else {
         return u64::MAX;
     };
@@ -817,21 +899,17 @@ extern "C" fn nova_ring3_object_write(address: u64, length: u64) -> u64 {
     0
 }
 
-fn checked_user_buffer(address: u64, length: u64) -> Option<&'static mut [u8]> {
-    let end = address.checked_add(length)?;
-    let page_end = process::USER_EXCHANGE_BASE + memory_core::PAGE_SIZE;
-    if length == 0 || address < process::USER_EXCHANGE_BASE || end > page_end {
-        return None;
-    }
-    Some(unsafe { core::slice::from_raw_parts_mut(address as *mut u8, length as usize) })
-}
-
 #[unsafe(no_mangle)]
 extern "C" fn nova_ring3_channel_send(tag: u64, address: u64, length: u64) -> u64 {
-    let Some(bytes) = checked_user_buffer(address, length) else {
+    if length == 0 || length > runtime_core::ipc::MAX_MESSAGE_BYTES as u64 {
         return u64::MAX;
-    };
-    match crate::ipc::send(1, tag as u32, bytes) {
+    }
+    let length = length as usize;
+    let mut bounce = [0u8; runtime_core::ipc::MAX_MESSAGE_BYTES];
+    if user_copy::copy_from_user(address, &mut bounce[..length]).is_err() {
+        return u64::MAX;
+    }
+    match crate::ipc::send(1, tag as u32, &bounce[..length]) {
         Ok(()) => 0,
         Err(_) => u64::MAX,
     }
@@ -839,12 +917,21 @@ extern "C" fn nova_ring3_channel_send(tag: u64, address: u64, length: u64) -> u6
 
 #[unsafe(no_mangle)]
 extern "C" fn nova_ring3_channel_receive(address: u64, capacity: u64) -> u64 {
-    let Some(output) = checked_user_buffer(address, capacity) else {
+    if capacity == 0 || capacity > runtime_core::ipc::MAX_MESSAGE_BYTES as u64 {
+        return u64::MAX;
+    }
+    let capacity = capacity as usize;
+    if user_copy::validate_user_destination(address, capacity).is_err() {
+        return u64::MAX;
+    }
+    let mut bounce = [0u8; runtime_core::ipc::MAX_MESSAGE_BYTES];
+    let Ok(length) = crate::ipc::receive(&mut bounce[..capacity]) else {
         return u64::MAX;
     };
-    crate::ipc::receive(output)
-        .map(|length| length as u64)
-        .unwrap_or(u64::MAX)
+    if user_copy::copy_to_user(address, &bounce[..length]).is_err() {
+        return u64::MAX;
+    }
+    length as u64
 }
 
 #[unsafe(no_mangle)]

@@ -62,6 +62,37 @@ pub struct CpuContext {
     pub cr3: u64,
 }
 
+pub const FXSAVE_BYTES: usize = 512;
+
+/// Legacy x87/SSE state used by the x86-64 FXSAVE64/FXRSTOR64 baseline.
+/// This deliberately does not claim AVX/AVX-512 state coverage.
+#[repr(C, align(16))]
+pub struct FxSaveArea {
+    bytes: [u8; FXSAVE_BYTES],
+}
+
+impl FxSaveArea {
+    pub const fn clean() -> Self {
+        let mut bytes = [0; FXSAVE_BYTES];
+        // Architectural reset values: x87 control word and MXCSR.
+        bytes[0] = 0x7f;
+        bytes[1] = 0x03;
+        bytes[24] = 0x80;
+        bytes[25] = 0x1f;
+        Self { bytes }
+    }
+
+    pub fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.bytes.as_mut_ptr()
+    }
+}
+
+impl Default for FxSaveArea {
+    fn default() -> Self {
+        Self::clean()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Process {
     pub id: ProcessId,
@@ -374,5 +405,18 @@ mod tests {
             .unwrap();
         assert_eq!(threads.remove(thread).unwrap().id, thread);
         assert!(threads.get(thread).is_none());
+    }
+
+    #[test]
+    fn fxsave_area_is_aligned_and_has_clean_control_state() {
+        assert_eq!(core::mem::size_of::<FxSaveArea>(), FXSAVE_BYTES);
+        assert_eq!(core::mem::align_of::<FxSaveArea>(), 16);
+        let mut area = FxSaveArea::clean();
+        let bytes = unsafe { core::slice::from_raw_parts(area.as_mut_ptr(), FXSAVE_BYTES) };
+        assert_eq!(u16::from_le_bytes([bytes[0], bytes[1]]), 0x037f);
+        assert_eq!(
+            u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
+            0x1f80
+        );
     }
 }

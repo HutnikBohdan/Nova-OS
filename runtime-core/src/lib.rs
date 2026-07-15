@@ -21,8 +21,8 @@ pub use capability::{Capability, CapabilityError, CapabilityTable, ObjectId, Rig
 pub use elf::{ElfError, LoadPlan, LoadSegment, SegmentFlags};
 pub use ipc::{Channel, IpcError, Message};
 pub use process::{
-    CpuContext, CrashReason, ExitCode, Process, ProcessError, ProcessId, ProcessState,
-    ProcessTable, Thread, ThreadId, ThreadState, ThreadTable,
+    CpuContext, CrashReason, ExitCode, FXSAVE_BYTES, FxSaveArea, Process, ProcessError, ProcessId,
+    ProcessState, ProcessTable, Thread, ThreadId, ThreadState, ThreadTable,
 };
 pub use scheduler::{
     BlockError, BlockedSet, DispatchError, Quantum, RoundRobin, SchedulerCore, SchedulerError,
